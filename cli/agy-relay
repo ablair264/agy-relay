@@ -1,0 +1,280 @@
+#!/usr/bin/env node
+// agy-relay — hand work to a worker agent (Antigravity/agy or Codex), pick the
+// model, watch the run, talk back to it, and keep a benchmark ledger. See ../SKILL.md.
+import fs from 'node:fs';
+import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, LEDGER } from '../lib/store.mjs';
+import { holder, pidAlive, queued, releaseLock, tryLock, waitTurn } from '../lib/queue.mjs';
+import { BACKENDS, ORDER } from '../lib/backends/index.mjs';
+import { config, setConfig, CONFIG } from '../lib/config.mjs';
+import { KINDS, LADDER, pct, route, stats } from '../lib/route.mjs';
+import { EXIT, brief, runTurn } from '../lib/run.mjs';
+import { reviewPacket } from '../lib/review.mjs';
+import { doctor, setup } from '../lib/setup.mjs';
+
+const USAGE = `agy-relay <command>
+  setup  [--force]                one-time: put agy-relay on PATH, ready the pane, then run doctor
+  doctor                          check node, agy, codex (installed + signed in), PATH and the pane
+  route  [opts] "task"          show which backend and model a task would get, and why
+  run    [opts] "task"            hand a task to the worker and watch it (foreground)
+  status [id]                     current state of a job (default: latest)
+  tail   [id] [-n 30]             the job's event log
+  answer <id> "text"              reply to a question / nudge a stalled job (same conversation)
+  review <id>                     task, agy's summary, git diff, gate and warnings in one packet
+  verify <id> pass|partial|fail [--note "why"]   Claude's verdict; feeds model routing
+  bench  [--kind K]               success rate, time and tokens per kind x model
+  jobs                            recent jobs
+  quota                           remaining agy (Gemini) quota and any Codex usage limit
+  models                          ladder models each backend has
+  config [key value]              show or set: backend auto|agy|codex, bench on|off
+  cancel [id]                     stop a running job
+
+run/route options:
+  --backend auto|agy|codex   which worker (default: config, then auto)
+  --kind ${Object.keys(KINDS).join('|')}   (guessed from the task if omitted)
+  --write          the worker may edit files; default is read-only
+  --dir PATH       repo/workspace the worker uses (default: cwd)
+  --tests "CMD"    gate the relay runs itself after the worker says done
+  --model ID       pin a model (skips routing; codex ids are model:effort)   --complex   start two rungs higher
+  --timeout 30m    limit for one turn               --stall N   seconds of silence = stalled (agy 240, codex 480)
+  --task-file F    read the task from a file        --no-sandbox (agy)  --no-explore
+  --no-wait        exit 3 if the backend is busy (default: queue and start when it frees)
+  --wait-max 4h    give up queueing after this long (exit 3)`;
+
+function parse(argv) {
+  const o = { _: [] };
+  const val = new Set(['kind', 'dir', 'tests', 'model', 'timeout', 'stall', 'task-file', 'note', 'n', 'by', 'backend', 'wait-max']);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--') || a === '-n') {
+      const k = a.replace(/^-+/, '');
+      if (val.has(k)) o[k] = argv[++i];
+      else o[k.replace(/^no-/, '')] = !k.startsWith('no-');
+    } else o._.push(a);
+  }
+  return o;
+}
+
+const secs = (v, d) => {
+  if (v === undefined) return d;
+  const m = String(v).match(/^(\d+)(s|m|h)?$/);
+  if (!m) throw new Error(`bad duration ${v}`);
+  return Number(m[1]) * ({ s: 1, m: 60, h: 3600 }[m[2] || 's']);
+};
+
+function taskOf(o) {
+  const t = o['task-file'] ? fs.readFileSync(o['task-file'], 'utf8') : o._.slice(1).join(' ');
+  if (!t.trim()) throw new Error('no task given');
+  return t.trim();
+}
+
+function printRoute(r) {
+  console.log(`backend: ${r.backend}  model: ${r.model}  kind: ${r.kind}${r.bench ? '' : '  (bench off)'}`);
+  for (const why of r.reasons) console.log(`  - ${why}`);
+  if (r.stats) console.log(`  ledger: ${r.stats.runs} runs, pass ${pct(r.stats.rate)}`);
+}
+
+async function cmdRun(o) {
+  const task = taskOf(o);
+  const dir = fs.realpathSync(o.dir || process.cwd());
+  const write = !!o.write;
+  const r = route({ task, kind: o.kind, write, complex: o.complex, model: o.model, backend: o.backend, explore: o.explore !== false });
+  if (KINDS[r.kind][1] && !write) console.log(`note: kind ${r.kind} usually writes files; pass --write if the worker should edit`);
+  const be = BACKENDS[r.backend];
+  const id = newJobId();
+  fs.mkdirSync(jobDir(id), { recursive: true });
+  const prompt = brief({ task, dir, write });
+  fs.writeFileSync(jobFile(id, 'task.md'), prompt);
+  writeJSON(jobFile(id, 'meta.json'), {
+    id, backend: r.backend, bin: be.BIN, kind: r.kind, model: r.model, write, dir, tests: o.tests || null, sandbox: o.sandbox !== false,
+    timeout_s: secs(o.timeout, 1800), stall_s: secs(o.stall, be.defaults.stall_s), startup_s: be.defaults.startup_s,
+    created: new Date().toISOString(), route_reasons: r.reasons, task: task.slice(0, 300),
+  });
+  printRoute(r);
+  const turn = await takeTurn(o, id, r.backend, true);
+  if (turn !== true) return turn;
+  try {
+    return EXIT[await runTurn(id, prompt)] ?? 13;
+  } finally { releaseLock(r.backend); }
+}
+
+// Get this backend's run lock: at once if free, else wait in the queue (unless
+// --no-wait). Returns true when held, or an exit code (3 busy/timeout, 15 cancelled).
+// fresh: a new job, whose status.json shows "queued" while it waits.
+async function takeTurn(o, id, backend, fresh) {
+  if (!queued(backend).length && !tryLock(backend, id)) return true;
+  const h0 = holder(backend);
+  if (o.wait === false) { console.error(`busy: job ${h0?.id ?? '?'} is driving ${backend} (pid ${h0?.pid ?? '?'}); --no-wait given.`); return 3; }
+  const mark = (extra) => fresh && writeJSON(jobFile(id, 'status.json'), { id, backend, pid: process.pid, started: new Date().toISOString(), ...extra });
+  const onSig = () => {
+    mark({ state: 'cancelled', finished: new Date().toISOString(), summary: 'cancelled while queued' });
+    console.log(`cancelled ${id} while queued`);
+    process.exit(EXIT.cancelled);
+  };
+  process.once('SIGTERM', onSig);
+  process.once('SIGINT', onSig);
+  try {
+    const ok = await waitTurn(backend, id, {
+      maxMs: secs(o['wait-max'], 4 * 3600) * 1000,
+      onWait: (ahead, h) => {
+        const behind = h?.id || ahead[0]?.id || '?';
+        mark({ state: 'queued', queued_behind: behind, position: ahead.length + 1 });
+        console.log(`queued: ${backend} is busy with ${behind}; position ${ahead.length + 1}${ahead.length ? ` (ahead: ${ahead.map((w) => w.id).join(', ')})` : ''}`);
+      },
+    });
+    if (!ok) { mark({ state: 'cancelled', finished: new Date().toISOString(), summary: 'gave up waiting in the queue (--wait-max)' }); console.error('gave up waiting in the queue (--wait-max)'); return 3; }
+    console.log(`${id}: our turn, starting`);
+    return true;
+  } finally {
+    process.off('SIGTERM', onSig);
+    process.off('SIGINT', onSig);
+  }
+}
+
+async function cmdAnswer(o) {
+  const id = resolveJob(o._[1]);
+  const text = o._.slice(2).join(' ').trim();
+  if (!text) throw new Error('answer needs text');
+  const meta = readJSON(jobFile(id, 'meta.json'));
+  const st = readJSON(jobFile(id, 'status.json'), {});
+  if (/starting|working/.test(st.state) && pidAlive(st.pid)) throw new Error(`job ${id} is still running; wait or cancel it`);
+  if (!meta.conversation_id) throw new Error(`job ${id} has no ${meta.backend || 'agy'} conversation to resume (it never started)`);
+  const backend = meta.backend || 'agy';
+  const turn = await takeTurn(o, id, backend, false);
+  if (turn !== true) return turn;
+  try {
+    const prompt = `Message from Claude: ${text}\n\nContinue the task under the same rules and end with the JSON status object.`;
+    return EXIT[await runTurn(id, prompt, { conversation: meta.conversation_id, answer: text })] ?? 13;
+  } finally { releaseLock(backend); }
+}
+
+function cmdStatus(o) {
+  const id = resolveJob(o._[1]);
+  const s = readJSON(jobFile(id, 'status.json'), {});
+  const m = readJSON(jobFile(id, 'meta.json'), {});
+  let state = s.state;
+  if (/starting|working|queued/.test(state) && !pidAlive(s.pid)) state = `${state} (relay process gone: orphaned)`;
+  if (s.state === 'queued') {
+    console.log(`${id} · ${state} behind ${s.queued_behind} (position ${s.position}) · ${m.backend || 'agy'} ${m.model} · ${m.kind}`);
+    return 0;
+  }
+  const idle = s.last_event_at ? Math.round((Date.now() - Date.parse(s.last_event_at)) / 1000) : '-';
+  console.log(`${id} · ${state} · ${m.backend || 'agy'} ${m.model} · ${m.kind}${m.write ? ' write' : ''} · turn ${s.turn}`);
+  console.log(`steps ${s.steps} · tools ${s.tool_calls} · errors ${s.tool_errors} · hook denials ${s.hook_denials} · idle ${s.finished ? '-' : idle + 's'}`);
+  if (s.active) console.log(`now: ${s.active.tool} ${s.active.arg || ''} (since ${s.active.since})`);
+  if (s.warning) console.log(`warning: ${s.warning}`);
+  if (s.question) console.log(`QUESTION: ${s.question}`);
+  if (s.finished) console.log(`summary: ${s.summary}`);
+  console.log(`conversation: ${s.conversation_id || '-'}`);
+  return 0;
+}
+
+function cmdTail(o) {
+  const id = resolveJob(o._[1]);
+  const lines = fs.readFileSync(jobFile(id, 'log.txt'), 'utf8').trimEnd().split('\n');
+  console.log(lines.slice(-Number(o.n || 30)).join('\n'));
+  return 0;
+}
+
+function cmdVerify(o) {
+  const id = resolveJob(o._[1]);
+  const verdict = o._[2];
+  if (!['pass', 'partial', 'fail'].includes(verdict)) throw new Error('verify <id> pass|partial|fail');
+  const by = o.by === 'user' ? 'user' : 'claude';
+  appendLedger({ type: 'verdict', id, verdict, note: o.note || '', by });
+  const turn = readJSON(jobFile(id, 'meta.json'), {}).turns || 1;
+  fs.appendFileSync(jobFile(id, 'events.jsonl'), JSON.stringify({ ts: new Date().toISOString(), turn, type: 'verdict', role: by, verdict, note: o.note || '' }) + '\n');
+  console.log(`recorded ${verdict} for ${id}`);
+  return 0;
+}
+
+const median = (a) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : null);
+
+function cmdBench(o) {
+  const rows = Object.values(stats())
+    .filter((s) => !o.kind || s.kind === o.kind)
+    .sort((a, b) => a.kind.localeCompare(b.kind) || LADDER.indexOf(a.model) - LADDER.indexOf(b.model));
+  if (!rows.length) { console.log(`no runs in ${LEDGER} yet`); return 0; }
+  const head = ['kind', 'model', 'runs', 'pass', 'n(w)', 'med s', 'med ktok', 'stalls', 'questions'];
+  const body = rows.map((s) => [s.kind, s.model, s.runs, pct(s.rate), s.n.toFixed(1),
+    median(s.secs) ?? '-', s.tokens.length ? Math.round(median(s.tokens) / 1000) : '-', s.stalls, s.questions]);
+  const w = head.map((h, i) => Math.max(h.length, ...body.map((r) => String(r[i]).length)));
+  for (const r of [head, ...body]) console.log(r.map((c, i) => String(c).padEnd(w[i])).join('  '));
+  if (!config().bench) console.log('\nbench is off: routing ignores these numbers (agy-relay config bench on)');
+  const unverified = readLedger().filter((r) => r.state === 'done' && !r.verdict && r.tests_pass == null);
+  if (unverified.length) console.log(`\n${unverified.length} done runs lack a verdict (counted at half weight): ${unverified.slice(-5).map((r) => r.id).join(', ')}`);
+  return 0;
+}
+
+function cmdJobs() {
+  for (const { id, meta, status } of listJobs()) {
+    console.log(`${id}  ${(status.state || '?').padEnd(14)} ${String(meta.backend || 'agy').padEnd(6)} ${String(meta.model || '').padEnd(24)} ${meta.kind || ''}  ${(meta.task || '').replace(/\s+/g, ' ').slice(0, 60)}`);
+  }
+  return 0;
+}
+
+function cmdCancel(o) {
+  const id = resolveJob(o._[1]);
+  const s = readJSON(jobFile(id, 'status.json'), {});
+  if (!pidAlive(s.pid)) { console.log(`${id} is not running`); return 0; }
+  process.kill(s.pid, 'SIGTERM');
+  console.log(`sent cancel to ${id} (relay pid ${s.pid})`);
+  return 0;
+}
+
+const commands = {
+  review: (o) => { console.log(reviewPacket(resolveJob(o._[1]))); return 0; },
+  run: cmdRun, answer: cmdAnswer, status: cmdStatus, tail: cmdTail, verify: cmdVerify, bench: cmdBench, jobs: cmdJobs, cancel: cmdCancel,
+  route: (o) => { printRoute(route({ task: taskOf(o), kind: o.kind, write: !!o.write, complex: o.complex, model: o.model, backend: o.backend, explore: false })); return 0; },
+  quota: cmdQuota, models: cmdModels, config: cmdConfig,
+  setup: (o) => {
+    const s = setup({ force: !!o.force });
+    const d = doctor();
+    console.log([...s.lines, ...d.lines].join('\n'));
+    return s.ok && d.ok ? 0 : 1;
+  },
+  doctor: () => { const d = doctor(); console.log(d.lines.join('\n')); return d.ok ? 0 : 1; },
+};
+
+function cmdQuota() {
+  for (const b of ORDER) {
+    const be = BACKENDS[b];
+    if (!be.installed()) { console.log(`${b}: not installed`); continue; }
+    if (b === 'agy') {
+      const q = be.quota({ refresh: true });
+      for (const [k, v] of Object.entries(q)) if (k !== 'resets') console.log(`agy   ${k.padEnd(11)} ${pct(v)}  resets ${q.resets[k] || '-'}`);
+    } else {
+      const q = be.quota({ refresh: true });
+      for (const k of ['codex5h', 'codexWeek']) console.log(`codex ${k.padEnd(11)} ${pct(q[k])}  resets ${q.resets?.[k] || '-'}`);
+      if (q.limitedUntil) console.log(`codex limited until ${new Date(q.limitedUntil).toLocaleString()}`);
+    }
+  }
+  return 0;
+}
+
+function cmdModels() {
+  for (const b of ORDER) {
+    const be = BACKENDS[b];
+    if (!be.installed()) { console.log(`${b}: not installed`); continue; }
+    const have = new Set(be.listModels({ refresh: true }).map((m) => m.id));
+    for (const m of be.LADDER) console.log(`${have.has(m) ? '✓' : '✗'} ${b.padEnd(6)} ${m}`);
+  }
+  return 0;
+}
+
+function cmdConfig(o) {
+  const [, key, value] = o._;
+  if (key) setConfig(key, value);
+  const c = config();
+  console.log(`backend ${c.backend}\nbench   ${c.bench ? 'on' : 'off'}\n(${CONFIG}; env AGY_RELAY_BACKEND / AGY_RELAY_BENCH override)`);
+  return 0;
+}
+
+const o = parse(process.argv.slice(2));
+const cmd = commands[o._[0]];
+if (!cmd || o.help) { console.log(USAGE); process.exit(cmd ? 0 : 2); }
+try {
+  process.exitCode = await cmd(o);
+} catch (e) {
+  console.error(`agy-relay: ${e.message}`);
+  process.exitCode = 2;
+}

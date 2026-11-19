@@ -1,0 +1,10 @@
+# Local files and runtime state
+.DS_Store
+__MACOSX/
+.env
+.env.*
+.agy-relay/
+.claude/
+node_modules/
+coverage/
+*.log

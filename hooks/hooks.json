@@ -1,0 +1,4 @@
+{
+  "description": "agy-relay mod: live handoff pane, band above the prompt, toasts",
+  "modules": ["./register.js"]
+}

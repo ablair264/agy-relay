@@ -1,0 +1,14 @@
+{
+  "name": "agy-relay",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Delegate coding tasks from Claude Code to Antigravity or Codex, with live progress, follow-up questions, and local benchmarks.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:mod": "claude plugin test ."
+  }
+}

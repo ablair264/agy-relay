@@ -1,0 +1,14 @@
+{
+  "name": "agy-relay",
+  "owner": {
+    "name": "agy-relay"
+  },
+  "plugins": [
+    {
+      "name": "agy-relay",
+      "source": "./",
+      "description": "Delegate coding tasks from Claude Code to Antigravity or Codex, with live progress, follow-up questions, and local benchmarks."
+    }
+  ],
+  "description": "Install the agy-relay coding handoff plugin for Claude Code."
+}
