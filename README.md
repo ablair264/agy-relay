@@ -10,19 +10,27 @@ Hand coding tasks from Claude Code to Antigravity (`agy`) or the Codex CLI. Watc
 
 ## Install in Claude Code
 
-Replace `YOUR-GITHUB-OWNER` with the account hosting this repository.
+Run this command inside Claude Code.
 
 ```text
-/plugin install agy-relay --marketplace YOUR-GITHUB-OWNER/agy-relay
+/plugin install agy-relay --marketplace ablair264/agy-relay
 ```
 
-For a local checkout, start Claude Code from the project you want to work on and point it at the checkout.
+If you have a local checkout of agy-relay, run this in your terminal from the project you want to work on.
 
 ```sh
 claude --plugin-dir /path/to/agy-relay
 ```
 
-On the first handoff, the skill runs setup to install the local launcher and connect the pane. For CLI-only use, run `node cli/agy-relay setup` from the checkout, follow the printed PATH instructions if needed, then run `agy-relay doctor`.
+On the first handoff, the skill runs setup if the `agy-relay` launcher is missing. Setup installs the launcher and connects the pane.
+
+For CLI-only use, run this in your terminal from the agy-relay checkout.
+
+```sh
+node cli/agy-relay setup
+```
+
+Follow the printed PATH instructions if needed, then run `agy-relay doctor` to check your setup.
 
 ## Try a handoff
 
