@@ -71,7 +71,15 @@ The `/handoff` pane opens and follows the job. Workers are **read-only by defaul
 | `/handoff settings` | Workers, models, default worker, usage cut-offs and auto-benchmarking |
 | `/handoff <job id>` | One job's timeline |
 
-When more than one job is active, the Live tab starts with an **Active** list: one row per job with its worker, state, model, what it's doing right now and how long it has been running. Jobs waiting on your answer stay listed for 30 minutes, and finished jobs for a minute. `▸` marks the job whose full timeline is shown below; select another row to switch. The band above the prompt shows the same jobs, one row each, and puts jobs with a question first when there isn't room for all of them.
+The Live tab shows one job at a time, top to bottom:
+
+- **In progress**, when another job is going too: one row per job that is running, queued or waiting on your answer, with its worker, state, model, what it's doing and how long it has run. `▸` marks the job shown below; select a row to switch.
+- **The job card**: the task, one line of facts (model, kind, write or read-only, id, tokens), then one coloured sentence saying what's happening: *agy is working*, *agy is asking you* (with the answer box right under the question), *Done · waiting for Claude's review*, *Done · Claude rated it PASS*, *Finished, but the gate failed*. While it runs: what it's doing now, its latest thought, and how long it has been quiet against the stall limit. Once it ends: the result, the files Git says changed, the gate and Claude's review note.
+- **Timeline**: who did what, in order, gate and rating included.
+
+Press `e` to expand: routing reasons, conversation ids, every tool call, full replies, and the relay's notes meant for Claude.
+
+The band above the prompt shows every active job, one row each, and puts jobs with a question first when there isn't room for all of them. The title row shows usage left on each worker.
 
 While a Codex job runs, a **THINK** line under NOW shows its latest reasoning summary (for example "⋯ Planning the CSV export"), and the band shows it when no tool is running. In the timeline, each group of tool calls shows the latest thought; press `e` to expand and read every thought in full, in order between the tool calls. These are the short summaries Codex writes about its reasoning, not its full reasoning. agy doesn't send them yet.
 
@@ -91,7 +99,7 @@ The **Settings** tab (`/handoff settings` or `4`) changes how work is routed. Ev
 | **Workers** | Turn agy or Codex off entirely, for example if you only have one of them. A worker that's off is never used, even when named. |
 | **Default worker** | **auto** picks per task from usage left and pass rates; **agy** or **codex** sends every handoff there unless Claude or a slash command names the other. |
 | **Models** | Turn individual models off. Routing skips them and moves to the next model on that worker's ladder (cheapest first). A model you pin yourself with `--model` is still used. |
-| **Usage cut-offs** | *Prefer the other worker below* (default 20%): when a worker has less usage left than this and the other has more, the other one gets the task. *Never use a worker below* (default off): a worker under this is not used at all, and Claude tells you why. |
+| **Usage cut-offs** | Two dropdowns. *Prefer the other worker below* (default 20%): when a worker has less usage left than this and the other has more, the other one gets the task. *Never use a worker below* (default off): a worker under this is not used at all, and Claude tells you why. Below them, each worker's usage bar shows where it stands, with both cut-offs marked. |
 | **Auto-benchmark** | The same switch as on the Bench tab. |
 
 **Prices and scores (optional).** With a free [BenchLM](https://benchlm.ai/data/access) key, the Settings tab shows each model's price per million tokens and its BenchLM coding and agentic scores in a small table, NEW models show their figures, and Ask Claude passes them along:

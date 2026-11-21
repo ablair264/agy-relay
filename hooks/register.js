@@ -497,18 +497,21 @@ export function register(on) {
           const isOn = settingsOf(cfg).workers[w]
           return setting($, ['worker', w, isOn ? 'off' : 'on'], `${w} ${isOn ? 'turned off: routing won’t use it' : 'turned on'}.`)
         },
-        setBackend: (b) => setting($, ['backend', b], b === 'auto' ? 'Default worker: auto (picked per task).' : `Default worker: ${b}.`),
+        setBackend: (b) => {
+          if (b === settingsOf(cfg).backend) return
+          return setting($, ['backend', b], b === 'auto' ? 'Default worker: auto (picked per task).' : `Default worker: ${b}.`)
+        },
         toggleModel: (m) => {
           const isOn = !settingsOf(cfg).disabled.has(m)
           return setting($, ['model', m, isOn ? 'off' : 'on'], `${shortModel(m)} ${isOn ? 'turned off: routing skips it' : 'turned on'}.`)
         },
-        stepLimit: (which, delta) => {
+        // which: low | stop; value: whole percent. The stop never goes above low.
+        setLimit: (which, value) => {
           const lim = settingsOf(cfg).limits
-          const max = which === 'low' ? 50 : Math.min(30, pctOf(lim.low))
-          const want = Math.max(0, Math.min(max, pctOf(lim[which]) + delta))
+          const want = Math.max(0, Math.min(which === 'low' ? 50 : pctOf(lim.low), Math.round(Number(value) || 0)))
           if (want === pctOf(lim[which])) return
           return setting($, ['limit', which, String(want)], which === 'low'
-            ? `Prefer the other worker when one has under ${want}% left.`
+            ? want ? `Prefer the other worker when one has under ${want}% left.` : 'Never switch workers for low usage.'
             : want ? `Never use a worker with under ${want}% left.` : 'No hard stop: a worker is used until it hits its limit.')
         },
       },

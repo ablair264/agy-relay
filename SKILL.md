@@ -112,9 +112,9 @@ The user can also run `/handoff autobench on|off` or use the switch on the pane'
 
 The mod reads `~/.agent-handoff` and shows:
 
-- **The `/handoff` pane**, which opens by itself when you run `agent-handoff run`. It has a handoff timeline (brief, pickup, each tool call, question, answer, gate, rating), what the worker is doing now, an idle bar against the stall limit, and an activity strip in the Desktop app. Tabs: Live, Jobs, Bench (with the auto-benchmark switch) and Settings (workers, models, default worker, usage cut-offs). It has Stop and Change model buttons, and an answer field when the worker asks. A finished, unrated job shows "Awaiting Claude's review" while auto-benchmarking is on.
+- **The `/handoff` pane**, which opens by itself when you run `agent-handoff run`. The Live tab shows a card for the job (task, facts, a status sentence such as "agy is working", "Done · waiting for Claude's review" or "Done · Claude rated it PASS", then the result, files, gate and your review note) and a timeline (brief, pickup, tool calls, question, answer, gate, rating). Tabs: Live, Jobs, Bench (with the auto-benchmark switch) and Settings (workers, models, default worker, usage cut-offs). It has Stop and Change model buttons, and an answer box under the worker's question.
 - **A band above the prompt** while a job runs or waits on a question, and toasts when the worker picks up, asks, finishes or stalls.
-- **Every active job at once.** When a codex job and an agy job run side by side (or another session has a job going), the band gives each its own row and the Live tab opens with an Active list showing each job's state and current step. Toasts and the auto-benchmark request cover every job, not just the newest.
+- **Every active job at once.** When a codex job and an agy job run side by side (or another session has a job going), the band gives each its own row and the Live tab opens with an In progress list showing each job's state and current step. Toasts and the auto-benchmark request cover every job, not just the newest.
 
 The user can also act from the pane, and the mod sends you a message each time:
 

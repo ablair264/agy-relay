@@ -65,11 +65,14 @@ test('the pane shows the handoff and lets you answer agy', async ($, on) => {
   await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: /^handed off → Hydrogen high · implement · write$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Hydrogen high · implement · write · #m42e/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '? agy is asking you' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Which language should the greeting use?' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '── TIMELINE' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^handed off → Hydrogen high$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^worked · 3 tools · 1 failed$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^asks: Which language should the greeting use\?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^── TURN 1 · asking you · 31s/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^agy Hydrogen high · 3 tools · 0 edits/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^asked: Which language should the greeting use\?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^backend|prior for/ })).toBeUndefined() // routing reasons only when expanded
   expect(await ui.find({ type: 'Text', text: /pre-tool hook/ })).toBeUndefined()
   await ui.press({ key: 'expand' })
   expect(await ui.find({ key: 'expand' })).toMatchObject({ props: { label: 'Collapse' } })
@@ -114,7 +117,8 @@ test('Desktop gets the activity strip; a finished job waits for Claude, not a bu
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('desktop'))
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Awaiting Claude’s review · agent-handoff review m42e$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '✓ Done · waiting for Claude’s review' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Claude reviews it with: agent-handoff review m42e' })).toBeDefined()
   expect(await ui.find({ key: 'verify-pass' })).toBeUndefined()
   await ui.unmount()
 })
@@ -191,9 +195,8 @@ test('with auto-benchmarking off a finished job shows no pending review', async 
   await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: /^asks: / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Awaiting Claude/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: '── REVIEW' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '✓ Done' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /waiting for Claude|Claude reviews it/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -346,15 +349,15 @@ test('the pane lists every active job above the timeline and switches on select'
   await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: '── ACTIVE · 2' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '── IN PROGRESS · 2' })).toBeDefined()
   expect(await ui.find({ key: `active-${ID}` })).toBeDefined()
   expect(await ui.find({ key: `active-${ID2}` })).toBeDefined()
   // Following the newest job (the codex one): its timeline is shown, marked ▸.
   expect(await ui.find({ type: 'Text', text: /^Write tests for parser\.ts$/ })).toBeDefined()
   await ui.press({ key: `active-${ID}` })
   await clock.advance(1000)
-  expect(await ui.find({ type: 'Text', text: /^asks: Which language should the greeting use\?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '── ACTIVE · 2' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Which language should the greeting use?' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '── IN PROGRESS · 2' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -428,22 +431,23 @@ test('the settings tab turns workers and models on and off, picks the default wo
   await ui.press({ key: 'model-gpt-6-luna:low' })
   expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'model', 'gpt-6-luna:low', 'off'])
   await clock.advance(1000)
-  expect(await ui.find({ key: 'model-gpt-6-luna:low' })).toMatchObject({ props: { label: 'Turn on Luna 6 low' } })
+  expect(await ui.find({ key: 'model-gpt-6-luna:low' })).toMatchObject({ props: { label: '○ Luna 6 low' } })
   expect(await ui.find({ type: 'Text', text: '5 of 6 on' })).toBeDefined()
 
-  await ui.press({ key: 'backend-codex' })
+  await ui.select({ key: 'default-worker', value: 'codex' })
   expect(runs.at(-1)!.slice(-3)).toEqual(['config', 'backend', 'codex'])
   await clock.advance(1000)
-  expect(await ui.find({ key: 'backend-codex' })).toMatchObject({ props: { label: '● codex' } })
+  expect(await ui.find({ key: 'default-worker' })).toMatchObject({ props: { value: 'codex' } })
 
-  await ui.press({ key: 'low-up' })
+  await ui.select({ key: 'limit-low', value: '25' })
   expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'low', '25'])
-  await ui.press({ key: 'stop-down' }) // already 0: nothing to run
+  await clock.advance(1000)
+  await ui.select({ key: 'limit-stop', value: '0' }) // already off: nothing to run
   expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'low', '25'])
-  await ui.press({ key: 'stop-up' })
+  await ui.select({ key: 'limit-stop', value: '5' })
   expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'stop', '5'])
   await clock.advance(1000)
-  expect(await ui.find({ type: 'Text', text: '  5%' })).toBeDefined()
+  expect(await ui.find({ key: 'limit-stop' })).toMatchObject({ props: { value: '5' } })
   await ui.unmount()
 })
 
@@ -598,11 +602,13 @@ test('with BenchLM data, settings shows price and scores per model and passes th
   await $.command.run({ command: 'handoff', args: 'settings' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: /^ +rung +\$\/1M in\/out +coding +agentic$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^3 +\$2\/\$10 +51 +53$/ })).toBeDefined() // Sol 6.2 low, rung 3
-  expect(await ui.find({ type: 'Text', text: /^1 +– +– +–$/ })).toBeDefined() // Luna: no data
-  expect(await ui.find({ type: 'Text', text: '$1/$5 · coding 58 · agentic 57' })).toBeDefined() // the NEW row
-  expect(await ui.find({ type: 'Text', text: /^Prices and scores: Data from BenchLM\.ai \(benchlm\.ai\), as of 2026-01-02\./ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '$/1M IN/OUT' })).toBeDefined()
+  expect(await ui.find({ key: 'model-gpt-6.2-sol:low' })).toMatchObject({ props: { label: '✓ Sol 6.2 low' } })
+  expect(await ui.find({ type: 'Text', text: '$2/$10' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '    51' })).toBeDefined() // coding, Sol 6.2
+  expect(await ui.find({ type: 'Text', text: '     53' })).toBeDefined() // agentic, Sol 6.2
+  expect(await ui.find({ type: 'Text', text: '· $1/$5 · coding 58 · agentic 57' })).toBeDefined() // the NEW row
+  expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: 'https://benchlm.ai', label: 'Data from BenchLM.ai' } })
   await ui.press({ key: 'ask-gpt-6.3-sol' })
   expect(submitted[0]).toContain('BenchLM (data as of 2026-01-02) has Sol 6.3 at $1/$5 per 1M input/output tokens, coding 58 (#3), agentic 57 (#3); the current ladder: Sol 6.2: $2/$10 per 1M input/output tokens, coding 51.2 (#4), agentic 52.6 (#4).')
   await ui.unmount()
@@ -616,8 +622,9 @@ test('without BenchLM data, settings says how to add it', async ($, on) => {
   await $.command.run({ command: 'handoff', args: 'settings' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: /^Add prices and coding scores to this list: get a free key at benchlm\.ai\/data\/access/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'rung 3' })).toBeDefined()
+  expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: 'https://benchlm.ai/data/access', label: 'free BenchLM key' } })
+  expect(await ui.find({ type: 'Text', text: 'RUNG' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '$/1M IN/OUT' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -655,4 +662,35 @@ test('the review reminder waits until Claude has been quiet, then comes once', a
   expect(submitted[0]).toContain(`agent-handoff review ${ID}`)
   await clock.advance(60e3)
   expect(submitted.length).toBe(1)
+})
+
+test('a finished, rated job reads as one card, with the relay notes and routing behind Expand', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 90e3 })
+  const done = { ...questionStatus, state: 'done', question: undefined, summary: 'Added greet.mjs with a Spanish greeting.', changed: [' ?? greet.mjs'], tests_pass: true, warnings: ['agy did not return the JSON status object; summary is its raw reply tail'] }
+  const files = fixture(on, done)
+  files[`${HOME}/jobs/${ID}/events.jsonl`] += [
+    { ts: at(40), turn: 2, type: 'reply', role: 'agy', state: 'done', summary: done.summary, changed: done.changed, warnings: done.warnings },
+    { ts: at(41), turn: 2, type: 'gate', cmd: 'node greet.test.mjs', pass: true },
+    { ts: at(60), turn: 2, type: 'verdict', role: 'claude', verdict: 'pass', note: 'Spanish greeting, tests pass' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n'
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '✓ Done · Claude rated it PASS' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Added greet.mjs with a Spanish greeting.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'greet.mjs' })).toBeDefined() // FILES
+  expect(await ui.find({ type: 'Text', text: '✓ passed · node greet.test.mjs' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Spanish greeting, tests pass' })).toBeDefined() // REVIEW
+  expect(await ui.find({ type: 'Text', text: '1 note for Claude from the relay · e shows it' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^! agy did not return/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'turn 2' })).toBeDefined() // two turns: a label each
+  await ui.press({ key: 'expand' })
+  expect(await ui.find({ type: 'Text', text: /^! agy did not return the JSON status object/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'prior for implement: gemini-4-hydrogen-high' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'picked up · c8a4932f-76e8' })).toBeDefined()
+  await ui.unmount()
 })
