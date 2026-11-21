@@ -65,10 +65,11 @@ test('the pane shows the handoff and lets you answer agy', async ($, on) => {
   await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: /^Hydrogen high · implement · write · #m42e/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Hydrogen high · implement · write/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '#m42e' })).toBeDefined() // in the job panel's title
   expect(await ui.find({ type: 'Text', text: '? agy is asking you' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Which language should the greeting use?' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '── TIMELINE' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'timeline' })).toBeDefined() // a panel's title
   expect(await ui.find({ type: 'Text', text: /^handed off → Hydrogen high$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^worked · 3 tools · 1 failed$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^asked: Which language should the greeting use\?$/ })).toBeDefined()
@@ -208,9 +209,9 @@ test('the bench tab scores each kind and model', async ($, on) => {
   await $.command.run({ command: 'handoff', args: 'bench' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: '── IMPLEMENT' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '100% pass' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: ' 1st ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'IMPLEMENT' })).toBeDefined() // the kind's heading in the pass-rates panel
+  expect(await ui.find({ type: 'Text', text: ' 100%' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'PASS' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /1 run\(s\) still need a rating/ })).toBeDefined()
   await ui.unmount()
 })
@@ -274,12 +275,12 @@ test('the bench tab switches auto-benchmarking off and on', async ($, on) => {
   await $.command.run({ command: 'handoff', args: 'bench' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: ' ON  ' })).toBeDefined() // padded to the width of OFF
+  expect(await ui.find({ type: 'Text', text: '(━━●)' })).toBeDefined() // the switch's track, on
   await ui.press({ key: 'autobench' })
   expect(runs[0].slice(-3)).toEqual(['config', 'autobench', 'off'])
   await clock.advance(1000)
-  expect(await ui.find({ type: 'Text', text: ' OFF ' })).toBeDefined()
-  expect(await ui.find({ key: 'autobench' })).toMatchObject({ props: { label: 'Turn on' } })
+  expect(await ui.find({ type: 'Text', text: '(●──)' })).toBeDefined()
+  expect(await ui.find({ key: 'autobench' })).toMatchObject({ props: { label: 'Off' } })
   await ui.press({ key: 'autobench' })
   expect(runs[1].slice(-3)).toEqual(['config', 'autobench', 'on'])
   await ui.unmount()
@@ -349,7 +350,7 @@ test('the pane lists every active job above the timeline and switches on select'
   await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: '── IN PROGRESS · 2' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'in progress · 2' })).toBeDefined()
   expect(await ui.find({ key: `active-${ID}` })).toBeDefined()
   expect(await ui.find({ key: `active-${ID2}` })).toBeDefined()
   // Following the newest job (the codex one): its timeline is shown, marked ▸.
@@ -357,7 +358,7 @@ test('the pane lists every active job above the timeline and switches on select'
   await ui.press({ key: `active-${ID}` })
   await clock.advance(1000)
   expect(await ui.find({ type: 'Text', text: 'Which language should the greeting use?' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '── IN PROGRESS · 2' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'in progress · 2' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -420,12 +421,12 @@ test('the settings tab turns workers and models on and off, picks the default wo
   await $.command.run({ command: 'handoff', args: 'settings' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: '── WORKERS' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'WORKERS' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Antigravity · Gemini$/ })).toBeDefined()
   await ui.press({ key: 'worker-agy' })
   expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'worker', 'agy', 'off'])
   await clock.advance(1000)
-  expect(await ui.find({ key: 'worker-agy' })).toMatchObject({ props: { label: 'Turn on' } })
+  expect(await ui.find({ key: 'worker-agy' })).toMatchObject({ props: { label: 'Off' } })
   expect(await ui.find({ type: 'Text', text: 'worker off' })).toBeDefined()
 
   await ui.press({ key: 'model-gpt-6-luna:low' })
@@ -488,7 +489,7 @@ test('Change model lists the enabled models and reruns the job on the one picked
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   await ui.press({ key: 'change-model' })
-  expect(await ui.find({ type: 'Text', text: '── STOP AND RESTART ON' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'stop and restart on' })).toBeDefined()
   expect(await ui.find({ key: 'pick-gemini-4-neon-high' })).toBeDefined()
   expect(await ui.find({ key: 'pick-gemini-4-hydrogen-high' })).toBeUndefined() // the job's own model
   expect(await ui.find({ key: 'pick-gemini-4-neon-xhigh' })).toBeUndefined() // turned off
@@ -499,7 +500,7 @@ test('Change model lists the enabled models and reruns the job on the one picked
   expect(runs[0][2]).toContain('retry "$2" --model "$3"')
   expect(runs[0].slice(-2)).toEqual([ID, 'gemini-4-neon-high'])
   expect(submitted[0]).toMatch(/stopped agent-handoff job .* restarted the same task on gemini-4-neon-high/)
-  expect(await ui.find({ type: 'Text', text: '── STOP AND RESTART ON' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'stop and restart on' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -574,7 +575,7 @@ test('a model a worker offers but no ladder knows is flagged once, with Ask Clau
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   expect(await ui.find({ key: 'tab-settings' })).toMatchObject({ props: { label: 'SETTINGS •' } })
-  expect(await ui.find({ type: 'Text', text: ' NEW ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '✦ NEW' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'low · high' })).toBeDefined()
   await ui.press({ key: 'ask-gpt-6.3-sol' })
   expect(submitted[0]).toMatch(/^agent-handoff: codex now offers gpt-6\.3-sol \(efforts: low, high\), which isn't on its model ladder\..*Don't change anything until I agree; then apply it with `agent-handoff config ladder codex/)

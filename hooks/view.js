@@ -1,7 +1,16 @@
 // Element trees for the agent-handoff pane and the band above the prompt.
 // Takes the elements from $.ui.resolve(e) and plain data; never the mods API.
-// Style: monospace throughout, small uppercase section labels, straight rules,
-// no bordered boxes. Every Text is mono so padded columns line up in Desktop too.
+//
+// The look, in a few rules:
+//   Panels   framed boxes, ╭─ title ──── note ─╮, stacked with no gap. The frame
+//            is dim; the job panel's frame takes its state's colour, so the one
+//            coloured frame on screen is the job and what it is doing.
+//   Text     labels muted, values at full strength, headings inside a panel in
+//            the accent colour. Numbers in columns are right-aligned.
+//   Controls toggles read (━━●) On / (●──) Off; meters are ■ cells on a · track.
+//   Colour   status only: green ok, yellow needs you, red failed, blue working;
+//            worker names keep their own colour. Every status has a glyph too.
+// Every Text is mono so padded columns line up in Desktop too.
 import {
   AGY, CLAUDE, CODEX, LADDER, LIVE, MODELS, OVERFLOW, STATE, WORKERS, activitySvg, benchFor, familyName, modelsFor, priceText, scoreText, thoughtParts, clip, fmtDur, fmtTok, idleBar, pct, shortModel, stateOf, timeline, toolKind, workerColor, workerOf,
 } from './data.js'
@@ -15,29 +24,58 @@ const fixed = (E, width, child) => E.Box({ width, flexShrink: 0, children: [chil
 const grow = (E, children) => E.Box({ flexDirection: 'column', flexGrow: 1, flexShrink: 1, minWidth: 0, overflow: 'hidden', children })
 // Left grows and truncates; right keeps its width so it never wraps.
 const spread = (E, left, right) => E.Box({ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', columnGap: 2, children: [grow(E, [left]), E.Box({ flexShrink: 0, children: [right] })] })
-// A rule that fills whatever width is left on its line, in any app: an over-long
-// line of ─ clipped to one row, so it never stops short or wraps.
-// width 0 + flexGrow: the rule's long text claims no width of its own and only fills
-// what the label beside it leaves (flexBasis isn't an allowed prop).
-const ruleFill = (E) => E.Box({ flexGrow: 1, flexShrink: 1, width: 0, minWidth: 0, height: 1, overflow: 'hidden', children: [dim(E, '─'.repeat(400))] })
 const keep = (E, child) => E.Box({ flexShrink: 0, children: [child] })
+// A run of one glyph that fills whatever width is left on its line, in any app: an
+// over-long run clipped to one row, so it never stops short or wraps. width 0 +
+// flexGrow: it claims no width of its own (flexBasis isn't an allowed prop).
+const LONG = 400
+const fillRun = (E, glyph, ink) => E.Box({ flexGrow: 1, flexShrink: 1, width: 0, minWidth: 0, height: 1, overflow: 'hidden', children: [T(E, glyph.repeat(LONG), ink)] })
+const ruleFill = (E) => fillRun(E, '─', { dimColor: true })
+
+const ACCENT = 'magenta'
 // Shared edges for the timeline: time | actor | text. Details (reasons, tool
 // rows, warnings) hang under the actor column at DETAIL_X.
 const TIME_W = 6, WHO_W = 7, DETAIL_X = TIME_W + 1
 const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.round(s) % 60).padStart(2, '0')}`
 const label = (E, text, color = AGY) => T(E, text.toUpperCase(), { color, weight: 'semibold' })
-const chip = (E, text, color) => T(E, ` ${text} `, { color, inverse: true, weight: 'semibold' })
 const levelColor = (f) => (f === null || f === undefined ? undefined : f > 0.5 ? 'green' : f > 0.2 ? 'yellow' : 'red')
-// One section heading style everywhere: ── LABEL ───────── (dim, fills the line).
-const section = (E, text) => row(E, [keep(E, dim(E, `── ${text.toUpperCase()}`)), ruleFill(E)])
-// A meter: filled part in colour, the rest as a dim track, so an empty meter
-// never reads as a divider. Box-drawing only (block glyphs break in Desktop).
+
+// A framed panel. The top and bottom edges are rows of text, so the title and the
+// note sit in the edge on every surface; the side bars are strips placed against
+// the body (absolute, top to bottom) that clip a long run of │ to its height.
+// The body has one cell of space inside each bar: 4 columns in all.
+export const FRAME_W = 4
+function panel(E, title, kids, o = {}) {
+  const ink = o.frame ? { color: o.frame } : { dimColor: true }
+  const edge = (s) => keep(E, T(E, s, ink))
+  const bar = (side) => E.Box({ position: 'absolute', top: 0, bottom: 0, [side]: 0, width: 1, overflow: 'hidden', children: [T(E, '│'.repeat(LONG), { ...ink, wrap: 'wrap' })] })
+  const name = typeof title === 'string' ? T(E, title, { weight: 'semibold' }) : title
+  return col(E, [
+    row(E, [edge('╭─ '), keep(E, name), edge(' '), fillRun(E, '─', ink), ...(o.note ? [edge(' '), keep(E, o.note), edge(' ─╮')] : [edge('╮')])], { columnGap: 0 }),
+    E.Box({ flexDirection: 'column', paddingX: 2, children: [bar('left'), bar('right'), ...kids] }),
+    row(E, [edge('╰'), fillRun(E, '─', ink), edge('╯')], { columnGap: 0 }),
+  ], o.key ? { key: o.key } : {})
+}
+// A heading inside a panel: ACCENT LABEL ───────── (the rule dim, to the edge).
+const sub = (E, text, note) => row(E, [keep(E, T(E, text.toUpperCase(), { color: ACCENT, weight: 'semibold' })), ruleFill(E), ...(note ? [keep(E, dim(E, note))] : [])])
+// A label and its value: the label muted and fixed, the value at full strength.
+const KV_W = 8
+const kv = (E, k, v, kw = KV_W) => row(E, [fixed(E, kw, dim(E, k)), grow(E, [v])], { columnGap: 0, alignItems: 'flex-start' })
+// A meter: ■ cells for the part filled, in colour, on a dim · track, so an empty
+// meter never reads as a divider.
 function meter(E, f, w, color) {
   const n = Math.round(Math.max(0, Math.min(1, f || 0)) * w)
-  return row(E, [T(E, '━'.repeat(n), { color }), dim(E, '─'.repeat(w - n))], { columnGap: 0, flexShrink: 0 })
+  return row(E, [T(E, '■'.repeat(n), { color }), dim(E, '·'.repeat(w - n))], { columnGap: 0, flexShrink: 0 })
 }
+// A switch: the track shows the state in colour; the word beside it is the control
+// (a label-only Button: one made of several Texts drew blank under the focus).
+const toggle = (E, key, on, onPress, hotkey) => row(E, [
+  keep(E, T(E, on ? '(━━●)' : '(●──)', on ? { color: 'green' } : { dimColor: true })),
+  E.Button({ key, label: on ? 'On' : 'Off', hotkey, plain: true, dimColor: !on || undefined, onPress }),
+], { columnGap: 1, flexShrink: 0 })
 // Empty state: a dim glyph line plus an optional hint under it.
 const empty = (E, text, hint) => [dim(E, `○ ${text}`), ...(hint ? [dim(E, `  ${hint}`, { wrap: 'wrap' })] : [])]
+
 const ACTOR = { Claude: CLAUDE, You: CLAUDE, agy: AGY, codex: CODEX, relay: undefined }
 
 // Mirrors the relay's watchdog: a shell command (agy run_command, codex shell) gets double the quiet time.
@@ -97,81 +135,84 @@ export function bands(E, m) {
   return col(E, rows)
 }
 
-// Below MIN_COLS the pane shows a polite message instead of a broken layout; under
-// NARROW it drops secondary columns (state words, prices, the agentic score).
-export const MIN_COLS = 34, NARROW = 58
+// Below MIN_COLS the pane shows a polite message instead of a broken layout; when a
+// panel's inside is under NARROW it drops secondary columns (state words, prices,
+// the agentic score) and puts form controls under their labels.
+export const MIN_COLS = 34, NARROW = 54
 
 export function pane(E, m) {
   const cols = m.cols || 64
   if (cols < MIN_COLS) return col(E, [label(E, 'handoff'), dim(E, `Widen the pane to ${MIN_COLS} columns to see handoffs.`, { wrap: 'wrap' })])
   const w = cols - 2
   const tab = (id, text, hotkey) => E.Button({ key: 'tab-' + id, label: text, hotkey, plain: true, dimColor: m.tab !== id, onPress: () => m.actions.setTab(id) })
-  // Groups are separated by space, not lines: title + tabs, quota, notice, body.
   const kids = [
-    spread(E, label(E, 'handoff'), usageSummary(E, m.quota)),
-    row(E, [tab('live', 'LIVE', '1'), tab('jobs', 'JOBS', '2'), tab('bench', 'BENCH', '3'), tab('settings', m.newModels?.length ? 'SETTINGS •' : 'SETTINGS', '4')], { columnGap: w < NARROW ? 2 : 3, flexWrap: 'wrap' }),
+    spread(E, label(E, 'handoff'), usageSummary(E, m.quota, (m.active || []).filter((a) => LIVE.has(a.state)).length)),
+    row(E, [tab('live', 'LIVE', '1'), tab('jobs', 'JOBS', '2'), tab('bench', 'BENCH', '3'), tab('settings', m.newModels?.length ? 'SETTINGS •' : 'SETTINGS', '4')], { columnGap: w - FRAME_W < NARROW ? 2 : 3, flexWrap: 'wrap' }),
   ]
-  if (m.notice) kids.push(T(E, ' '), T(E, m.notice, { color: 'yellow', wrap: 'wrap' }))
-  kids.push(T(E, ' '))
-  const body = m.tab === 'jobs' ? jobsTab(E, m) : m.tab === 'bench' ? benchTab(E, m, w) : m.tab === 'settings' ? settingsTab(E, m, w) : liveTab(E, m, w)
+  if (m.notice) kids.push(T(E, m.notice, { color: 'yellow', wrap: 'wrap' }))
+  const body = m.tab === 'jobs' ? jobsTab(E, m, w) : m.tab === 'bench' ? benchTab(E, m, w) : m.tab === 'settings' ? settingsTab(E, m, w) : liveTab(E, m, w)
   return col(E, [...kids, ...body])
 }
 
-// Usage left per worker in the title row, coloured by how much is left; the bars
-// with the cut-offs marked are on the Settings tab. Workers go by the same names
-// everywhere in the pane: agy and codex.
-function usageSummary(E, q) {
+// The title row's right end: usage left per worker, coloured by how much is left,
+// and how many jobs are running. Workers go by the same names everywhere: agy, codex.
+function usageSummary(E, q, running) {
   const parts = [['agy', usageLeft(q, 'agy')], ['codex', usageLeft(q, 'codex')]].filter(([, f]) => f !== null)
-  if (!parts.length) return T(E, '')
-  return row(E, parts.map(([name, f]) => row(E, [dim(E, name), T(E, pct(f), { color: levelColor(f) })])), { columnGap: 3 })
+  const kids = parts.map(([name, f]) => row(E, [dim(E, name), T(E, pct(f), { color: levelColor(f), tabular: true })]))
+  if (running) kids.push(T(E, `${running}●`, { color: STATE.working.color }))
+  return kids.length ? row(E, kids, { columnGap: 3 }) : T(E, '')
 }
 
-// The Live tab, top to bottom:
-//   IN PROGRESS   every other job running, queued or waiting on you (one row each)
-//   the job card  task, one line of facts, then one coloured sentence saying what is
-//                 happening now; while it runs, what it is doing and thinking and
-//                 how long it has been quiet; once it ends, the result
-//   TIMELINE      who did what, in order, gate and rating included
-// Collapsed it shows what a person needs; `e` adds routing reasons, conversation
-// ids, every tool call, full replies and the relay's notes meant for Claude.
+// The Live tab, top to bottom, each a panel:
+//   in progress   every other job running, queued or waiting on you (a table)
+//   job #id       the task, one line of facts, then one coloured sentence saying
+//                 what is happening; while it runs, what it is doing and thinking
+//                 and how long it has been quiet; once it ends, the result. The
+//                 frame takes the state's colour, the edge says the state and time.
+//   timeline      who did what, in order, gate and rating included
+// Then the key hints. Collapsed it shows what a person needs; `e` adds routing
+// reasons, conversation ids, every tool call, full replies and the relay's notes.
 function liveTab(E, m0, w) {
   const j = m0.job
-  if (!j) return empty(E, 'No handoff yet', 'Ask Claude to hand a task off, or use /agent-handoff:codex-task or /agent-handoff:agy-task.')
+  if (!j) return [panel(E, 'live', empty(E, 'No handoff yet', 'Ask Claude to hand a task off, or use /agent-handoff:codex-task or /agent-handoff:agy-task.'))]
+  const wi = w - FRAME_W
   const st = j.status, meta = j.meta
   const W = workerOf(meta)
-  const m = { ...m0, worker: W }
+  const m = { ...m0, worker: W, w: wi }
   const s = stateOf(m.jobState)
   const running = LIVE.has(st.state) && m.jobState !== 'orphaned'
   const dur = meta.totals?.duration_s ?? (st.started ? (m.now - Date.parse(st.started)) / 1000 : null)
   const items = timeline(j.events)
   const verdictEv = [...j.events].reverse().find((ev) => ev.type === 'verdict')
   const gate = [...j.events].reverse().find((ev) => ev.type === 'gate')
-  const out = [...activeList(E, m, w)]
+  const out = []
+  const act = activeList(E, m, wi)
+  if (act) out.push(act)
 
-  // The card: task, facts, status.
-  // The task is the heading; the status sentence below carries the state and colour.
-  out.push(spread(E,
-    T(E, meta.task || '', { weight: 'semibold', wrap: 'truncate' }),
-    keep(E, T(E, fmtDur(dur), { color: running ? s.color : undefined, dimColor: !running || undefined }))))
-  const facts = [shortModel(meta.model), meta.kind, meta.write ? 'write' : 'read-only', `#${j.id.slice(-4)}`, fmtTok(meta.totals?.tokens ?? st.tokens), (st.turn || 1) > 1 ? `${st.turn} turns` : '']
-  out.push(row(E, [keep(E, label(E, W, workerColor(W))), grow(E, [dim(E, facts.filter(Boolean).join(' · '), { wrap: 'truncate' })])]))
-  if (!m.following) out.push(dim(E, 'pinned to this job · l follows the newest'))
+  const card = [T(E, meta.task || '', { weight: 'semibold', wrap: 'wrap', maxLines: m.expanded ? undefined : 2 })]
+  const facts = [shortModel(meta.model), meta.kind, meta.write ? 'write' : 'read-only', fmtTok(meta.totals?.tokens ?? st.tokens), (st.turn || 1) > 1 ? `${st.turn} turns` : '']
+  card.push(row(E, [keep(E, label(E, W, workerColor(W))), grow(E, [dim(E, facts.filter(Boolean).join(' · '), { wrap: 'truncate' })])]))
+  if (!m.following) card.push(dim(E, 'pinned to this job · l follows the newest'))
   if (m.svgOk) {
     const svg = activitySvg(j.events, m.now, running)
-    if (svg) out.push(E.Svg({ source: svg, alt: `${W} activity over time`, width: 600, height: 22 }))
+    if (svg) card.push(E.Svg({ source: svg, alt: `${W} activity over time`, width: 600, height: 22 }))
   }
-  out.push(T(E, ' '), ...statusBlock(E, { ...m, w }, st, s, running, gate, verdictEv))
+  card.push(T(E, ' '), ...statusBlock(E, m, st, s, running, gate, verdictEv))
+  const frame = s.color === 'gray' ? undefined : s.color
+  out.push(panel(E, row(E, [T(E, 'job', { weight: 'semibold' }), dim(E, `#${j.id.slice(-4)}`)]), card, {
+    frame, note: T(E, `${s.glyph} ${s.word}${dur !== null ? ` · ${fmtDur(dur)}` : ''}`, { color: frame, dimColor: !frame || undefined, tabular: true }),
+  }))
 
-  // The timeline, one section; a rule per turn only when there is more than one.
-  // The card already shows the duration, so the rule only counts turns.
-  out.push(T(E, ' '), sectionNote(E, 'timeline', (st.turn || 1) > 1 ? `${st.turn} turns` : ''))
-  if (!items.length && st.state !== 'queued') out.push(...empty(E, 'Nothing recorded yet'))
-  out.push(...turns(E, items, w, running, m))
+  // The timeline; a label per turn only when there is more than one.
+  const tl = turns(E, items, wi, running, m)
+  if (!items.length && st.state !== 'queued') tl.push(...empty(E, 'Nothing recorded yet'))
+  out.push(panel(E, 'timeline', tl.length ? tl : [dim(E, 'Starts when the job does.')], { note: (st.turn || 1) > 1 ? dim(E, `${st.turn} turns`) : undefined }))
   out.push(...actions(E, m, st, running))
   return out
 }
 
-// One coloured sentence for what is going on, then what goes with it.
+// One coloured sentence for what is going on, then what goes with it, as labels
+// and values.
 function statusBlock(E, m, st, s, running, gate, verdictEv) {
   const W = m.worker
   const say = (text, color, extra = {}) => T(E, text, { color, weight: 'semibold', wrap: 'wrap', ...extra })
@@ -184,11 +225,11 @@ function statusBlock(E, m, st, s, running, gate, verdictEv) {
     const { idle, limit } = idleOf(st, m.job.meta, m.now)
     const b = idleBar(idle, limit)
     out.push(say(st.state === 'starting' ? `○ Starting ${W}…` : `● ${W} is working`, s.color))
-    out.push(row(E, [fixed(E, 7, dim(E, 'NOW')), grow(E, [T(E, st.active ? `${st.active.tool} ${st.active.arg || ''}` : 'thinking', { wrap: 'truncate-middle' })])]))
-    if (st.thought?.head) out.push(row(E, [fixed(E, 7, dim(E, 'THINK')), grow(E, [T(E, `⋯ ${st.thought.head}`, { color: workerColor(W), wrap: 'truncate' })])]))
+    out.push(kv(E, 'Now', T(E, st.active ? `${st.active.tool} ${st.active.arg || ''}` : 'thinking', { wrap: 'truncate-middle' })))
+    if (st.thought?.head) out.push(kv(E, 'Think', T(E, `⋯ ${st.thought.head}`, { color: workerColor(W), wrap: 'truncate' })))
     // The meter shrinks first, then the words, so the line never wraps.
     const narrow = m.w < NARROW
-    out.push(row(E, [fixed(E, 7, dim(E, 'QUIET')), meter(E, limit ? idle / limit : 0, narrow ? 8 : 16, b.color), grow(E, [dim(E, narrow ? `${fmtDur(idle)} of ${fmtDur(limit)}` : `${fmtDur(idle)} · stalls at ${fmtDur(limit)}`, { wrap: 'truncate' })])]))
+    out.push(kv(E, 'Quiet', row(E, [meter(E, limit ? idle / limit : 0, narrow ? 8 : 12, b.color), grow(E, [dim(E, narrow ? `${fmtDur(idle)} of ${fmtDur(limit)}` : `${fmtDur(idle)} · stalls at ${fmtDur(limit)}`, { wrap: 'truncate' })])])))
     if (st.warning) out.push(T(E, `! ${st.warning}`, { color: 'yellow', wrap: 'truncate' }))
   } else if (st.state === 'question') {
     out.push(say(`? ${W} is asking you`, 'yellow'))
@@ -204,29 +245,31 @@ function statusBlock(E, m, st, s, running, gate, verdictEv) {
     else out.push(say(`${s.glyph} ${s.word[0].toUpperCase()}${s.word.slice(1)}`, s.color))
     // The result: what the worker says, what Git says changed, the gate.
     const summary = String(st.summary || '').trim()
-    if (summary) out.push(row(E, [fixed(E, 7, dim(E, 'RESULT')), grow(E, [T(E, m.expanded ? summary : clip(summary, 240), { wrap: 'wrap' })])], { alignItems: 'flex-start' }))
+    if (summary) out.push(kv(E, 'Result', T(E, m.expanded ? summary : clip(summary, 240), { wrap: 'wrap' })))
     const changed = (st.changed || []).map((c) => c.trim().replace(/^\S+\s+/, ''))
-    if (changed.length) out.push(row(E, [fixed(E, 7, dim(E, 'FILES')), grow(E, [T(E, changed.join(', '), { wrap: 'truncate-middle' })])]))
-    if (gate) out.push(row(E, [fixed(E, 7, dim(E, 'GATE')), grow(E, [T(E, `${gate.pass ? '✓ passed' : '✕ failed'} · ${gate.cmd || ''}`, { color: gate.pass ? 'green' : 'red', wrap: 'truncate-middle' })])]))
-    if (verdictEv?.note) out.push(row(E, [fixed(E, 7, dim(E, 'REVIEW')), grow(E, [dim(E, verdictEv.note, { wrap: 'wrap' })])], { alignItems: 'flex-start' }))
+    if (changed.length) out.push(kv(E, 'Files', T(E, changed.join(', '), { wrap: 'truncate-middle' })))
+    if (gate) out.push(kv(E, 'Gate', T(E, `${gate.pass ? '✓ passed' : '✕ failed'} · ${gate.cmd || ''}`, { color: gate.pass ? 'green' : 'red', wrap: 'truncate-middle' })))
+    if (verdictEv?.note) out.push(kv(E, 'Review', dim(E, verdictEv.note, { wrap: 'wrap' })))
     if (st.state === 'done' && !v && m.benchOn !== false) out.push(dim(E, `Claude reviews it with: agent-handoff review ${String(m.job.id).slice(-4)}`, { wrap: 'truncate' }))
     const notes = (st.warnings || []).length
-    if (notes && !m.expanded) out.push(dim(E, `${notes} note${notes === 1 ? '' : 's'} for Claude from the relay · e shows ${notes === 1 ? 'it' : 'them'}`))
+    if (notes && !m.expanded) out.push(dim(E, `${notes} note${notes === 1 ? '' : 's'} for Claude from the relay · e shows ${notes === 1 ? 'it' : 'them'}`, { wrap: 'wrap' }))
     if (m.expanded) for (const n of st.warnings || []) out.push(T(E, `! ${n}`, { color: 'yellow', wrap: 'wrap' }))
   }
   return out
 }
 
-// Every job in progress (running, queued, or waiting on an answer), above the card,
-// whenever one is going besides the job shown. ▸ marks the job shown below; select
-// a row to show that one instead.
+// Every job in progress (running, queued, or waiting on an answer), as a table above
+// the job, whenever one is going besides the job shown. ▸ marks the job shown
+// below; select a row to show that one instead.
 function activeList(E, m, w) {
   const act = (m.active || []).filter((a) => LIVE.has(a.state) || /^(queued|question|blocked)$/.test(a.state))
-  if (!act.some((a) => a.id !== m.job?.id)) return []
+  if (!act.some((a) => a.id !== m.job?.id)) return null
   // Narrow: the state is its glyph alone, so the model and the step keep their room.
   const narrow = w < NARROW
   const stateW = narrow ? 2 : STATE_W
-  const doingW = Math.max(8, w - 2 - stateW - 6 - MODEL_W - 9 - 4)
+  const TIME_COL = 8
+  const doingW = Math.max(8, w - 2 - stateW - 7 - MODEL_W - 2 - TIME_COL)
+  const head = row(E, [fixed(E, 2, T(E, '')), fixed(E, stateW, dim(E, narrow ? '' : 'STATE')), fixed(E, 7, dim(E, 'WORKER')), grow(E, [dim(E, narrow ? 'MODEL · NOW' : `${'MODEL'.padEnd(MODEL_W)}  NOW`)]), keep(E, dim(E, 'TIME'.padStart(TIME_COL)))], { columnGap: 0 })
   const rows = act.map((a) => {
     const s = stateOf(a.state)
     const W = workerOf(a.meta)
@@ -238,11 +281,11 @@ function activeList(E, m, w) {
       fixed(E, 2, T(E, shown ? '▸' : ' ', { weight: 'semibold' })),
       fixed(E, stateW, T(E, narrow ? s.glyph : `${s.glyph} ${s.word}`, { color: s.color })),
       fixed(E, 7, T(E, W, { color: workerColor(W), weight: 'semibold' })),
-      grow(E, [E.Button({ key: 'active-' + a.id, label: narrow ? clip(`${shortModel(a.meta.model)} · ${doingOf(st)}`, Math.max(8, w - 2 - stateW - 7 - 9)) : `${shortModel(a.meta.model).padEnd(MODEL_W)}  ${clip(doingOf(st), doingW)}`, plain: true, dimColor: !shown || undefined, onPress: () => m.actions.select(a.id) })]),
-      keep(E, dim(E, right.padStart(8))),
+      grow(E, [E.Button({ key: 'active-' + a.id, label: narrow ? clip(`${shortModel(a.meta.model)} · ${doingOf(st)}`, Math.max(8, w - 2 - stateW - 7 - TIME_COL)) : `${shortModel(a.meta.model).padEnd(MODEL_W)}  ${clip(doingOf(st), doingW)}`, plain: true, dimColor: !shown || undefined, onPress: () => m.actions.select(a.id) })]),
+      keep(E, dim(E, right.padStart(TIME_COL), { tabular: true })),
     ], { columnGap: 0 })
   })
-  return [section(E, `in progress · ${act.length}`), ...rows, T(E, ' ')]
+  return panel(E, `in progress · ${act.length}`, [head, ...rows])
 }
 
 // One line per event: dim time | actor (in its colour) | what happened.
@@ -367,6 +410,7 @@ function burstExpanded(E, it, W) {
   return out
 }
 
+// The key hints under the panels: what can be done to this job, then moving between jobs.
 function actions(E, m, st, running) {
   const out = []
   const btns = []
@@ -377,8 +421,8 @@ function actions(E, m, st, running) {
   btns.push(E.Button({ key: 'older', label: '◀ Older', hotkey: 'o', plain: true, onPress: m.actions.older }))
   btns.push(E.Button({ key: 'newer', label: 'Newer ▶', hotkey: 'n', plain: true, onPress: m.actions.newer }))
   if (!m.following) btns.push(E.Button({ key: 'follow', label: 'Latest', hotkey: 'l', plain: true, onPress: m.actions.follow }))
-  out.push(T(E, ' '), row(E, btns, { columnGap: 3, flexWrap: 'wrap' }))
-  if (m.picking) out.push(...modelPicker(E, m, going))
+  out.push(row(E, btns, { columnGap: 3, flexWrap: 'wrap', paddingX: 1 }))
+  if (m.picking) out.push(modelPicker(E, m, going))
   return out
 }
 
@@ -389,14 +433,15 @@ function modelPicker(E, m, going) {
   const s = m.settings
   const cur = m.job.meta.model
   const order = [workerOf(m.job.meta), ...['agy', 'codex'].filter((w) => w !== workerOf(m.job.meta))]
-  const out = [T(E, ' '), section(E, going ? 'stop and restart on' : 'rerun this task on')]
+  const out = []
   let any = false
   for (const wk of order) {
     if (!s.workers[wk]) continue
     const models = modelsFor(s, wk).filter((id) => id !== cur && !s.disabled.has(id))
     if (!models.length) continue
+    if (any) out.push(T(E, ' '))
     any = true
-    out.push(label(E, wk, workerColor(wk)))
+    out.push(sub(E, wk))
     for (const id of models) {
       out.push(row(E, [
         fixed(E, MODEL_W + 4, E.Button({ key: 'pick-' + id, label: `→ ${shortModel(id)}`, plain: true, onPress: () => m.actions.rerunOn(id) })),
@@ -406,30 +451,31 @@ function modelPicker(E, m, going) {
   }
   if (!any) out.push(...empty(E, 'No other model is turned on', 'Turn more on in the Settings tab (4).'))
   const hidden = order.reduce((n, wk) => n + (s.workers[wk] ? modelsFor(s, wk).filter((id) => s.disabled.has(id)).length : modelsFor(s, wk).length), 0)
+  out.push(T(E, ' '))
   if (hidden) out.push(dim(E, `${hidden} model${hidden === 1 ? ' is' : 's are'} turned off in Settings (4) and not listed.`, { wrap: 'wrap' }))
   out.push(dim(E, `Now on ${shortModel(cur)}. ${going ? 'The current run stops first; ' : ''}the rerun is a new job, and Claude reviews it.`, { wrap: 'wrap' }))
-  return out
+  return panel(E, going ? 'stop and restart on' : 'rerun this task on', out)
 }
 
 const modelNote = (s, wk, id) => (OVERFLOW.has(id) ? 'overflow · own weekly pool' : `rung ${modelsFor(s, wk).indexOf(id) + 1}${id === 'gemini-4-hydrogen-low' ? ' · lookups and digests' : ''}`)
 
-// A section heading with a note at the right end of its rule.
-const sectionNote = (E, text, note) => row(E, [keep(E, dim(E, `── ${text.toUpperCase()}`)), ruleFill(E), keep(E, dim(E, note))])
-
-// Settings, laid out as a form. Every change runs `agent-handoff config`, so the
-// CLI validates it and routing sees it on the next handoff.
-//   WORKERS          on/off, usage left, and the default worker (a Select)
+// Settings: one panel laid out as a form, accent headings between its parts. Every
+// change runs `agent-handoff config`, so the CLI validates it and routing sees it on
+// the next handoff.
+//   WORKERS          a switch per worker with its usage left, and the default worker
 //   <WORKER> MODELS  a table: a toggle per model (one label-only Button, so the
 //                    focus inverts the whole name), rung, and BenchLM's price and
 //                    scores when the user has a key; overflow models grouped
-//   USAGE CUT-OFFS   two Selects, and each worker's usage bar with both marked
+//   USAGE CUT-OFFS   two Selects, and each worker's usage meter with both marked
 //   AUTO-BENCHMARK   the same switch as the Bench tab
 const COL = { rung: 6, price: 13, coding: 8, agentic: 9 }
 const LABEL_W = 32
-// Columns that give way, in this order, when the table is wider than the pane.
+// Columns that give way, in this order, when the table is wider than the panel.
 const DROP_ORDER = ['agentic', 'price', 'coding']
 // The two cut-offs differ by weight as well as colour, so they read without colour.
 const CUT = { low: { glyph: '│', color: 'yellow' }, stop: { glyph: '┃', color: 'red' } }
+// A score this high is drawn green: the models worth reaching for.
+const STRONG = 90
 
 // A form row: label, then its control; when narrow, the control goes under its label.
 const field = (E, w, lab, control) => (w < NARROW
@@ -443,8 +489,8 @@ function usageLeft(q, wk) {
   return v.length ? Math.min(...v) : null
 }
 
-// A usage bar with the two cut-offs marked: ━ used up to what is left, then a mark
-// at each cut-off (│ yellow: prefer the other worker below it; ┃ red: never use below it).
+// A usage meter with the two cut-offs marked: ■ for what is left, then a mark at
+// each cut-off (│ yellow: prefer the other worker below it; ┃ red: never use below it).
 function usageBar(E, left, lim, width) {
   const n = Math.round(Math.max(0, Math.min(1, left)) * width)
   const mark = (f) => Math.min(width - 1, Math.max(0, Math.round(f * width)))
@@ -461,7 +507,7 @@ function usageBar(E, left, lim, width) {
   }
   return row(E, runs.map((r) => {
     if (r.look.startsWith('m:')) { const c = CUT[r.look.slice(2)]; return T(E, c.glyph.repeat(r.len), { color: c.color }) }
-    return r.look === 'fill' ? T(E, '━'.repeat(r.len), { color: fill }) : dim(E, '─'.repeat(r.len))
+    return r.look === 'fill' ? T(E, '■'.repeat(r.len), { color: fill }) : dim(E, '·'.repeat(r.len))
   }), { columnGap: 0, flexShrink: 0 })
 }
 
@@ -472,25 +518,26 @@ const pctOptions = (from, to, cur) => {
 }
 
 function settingsTab(E, m, w) {
+  const wi = w - FRAME_W
   const s = m.settings
   const a = m.actions
   const bl = m.benchlm
   const out = []
 
   // WORKERS
-  out.push(section(E, 'workers'))
+  out.push(sub(E, 'workers'))
   for (const wk of ['agy', 'codex']) {
     const on = s.workers[wk]
     const left = usageLeft(m.quota, wk)
     out.push(spread(E,
-      row(E, [fixed(E, 6, label(E, wk, workerColor(wk))), keep(E, chip(E, on ? 'ON ' : 'OFF', on ? 'green' : 'gray')), dim(E, WORKERS[wk], { wrap: 'truncate' })]),
+      row(E, [fixed(E, 6, label(E, wk, workerColor(wk))), dim(E, WORKERS[wk], { wrap: 'truncate' })]),
       row(E, [
-        keep(E, left === null ? T(E, '') : T(E, `${pct(left)} left`, { color: on ? levelColor(left) : undefined, dimColor: !on || undefined })),
-        E.Button({ key: 'worker-' + wk, label: on ? 'Turn off' : 'Turn on', plain: true, dimColor: on || undefined, onPress: () => a.toggleWorker(wk) }),
-      ], { columnGap: 3 })))
+        keep(E, left === null ? T(E, '') : T(E, `${pct(left)} left`, { color: on ? levelColor(left) : undefined, dimColor: !on || undefined, tabular: true })),
+        toggle(E, 'worker-' + wk, on, () => a.toggleWorker(wk)),
+      ], { columnGap: 2 })))
   }
   if (!s.workers.agy && !s.workers.codex) out.push(T(E, '! Both workers are off: handoffs fail until one is on.', { color: 'yellow', wrap: 'wrap' }))
-  out.push(T(E, ' '), field(E, w, T(E, 'Default worker'), E.Select({
+  out.push(T(E, ' '), field(E, wi, T(E, 'Default worker'), E.Select({
     key: 'default-worker', value: s.backend, onSelect: (v) => a.setBackend(v),
     options: [{ value: 'auto', label: 'auto · picked per task' }, { value: 'agy', label: 'agy' }, { value: 'codex', label: 'codex' }],
   })))
@@ -499,10 +546,10 @@ function settingsTab(E, m, w) {
   // MODELS, one table per worker. Widths come from the names actually shown.
   const names = ['agy', 'codex'].flatMap((wk) => modelsFor(s, wk).map((id) => shortModel(id).length))
   const nameW = Math.max(12, ...names) + 4 // "✓ " and two spaces
-  // BenchLM columns, minus any that don't fit the pane (agentic goes first, then price).
+  // BenchLM columns, minus any that don't fit the panel (agentic goes first, then price).
   const shownCols = bl ? ['price', 'coding', 'agentic'] : []
   for (const c of DROP_ORDER) {
-    if (nameW + COL.rung + shownCols.reduce((n, k) => n + COL[k], 0) <= w) break
+    if (nameW + COL.rung + shownCols.reduce((n, k) => n + COL[k], 0) <= wi) break
     if (shownCols.includes(c)) shownCols.splice(shownCols.indexOf(c), 1)
   }
   const HEAD = { price: '$/1M IN/OUT', coding: 'CODING'.padStart(COL.coding - 2), agentic: 'AGENTIC'.padStart(COL.agentic - 2) }
@@ -515,11 +562,12 @@ function settingsTab(E, m, w) {
     const on = !s.disabled.has(id)
     const b = bl && benchFor(bl, id)
     const faint = !on || workerOff || undefined
-    const cell = { price: () => priceText(b) || '–', coding: () => (scoreText(b?.coding) || '–').padStart(COL.coding - 2), agentic: () => (scoreText(b?.agentic) || '–').padStart(COL.agentic - 2) }
+    const score = (sc, width) => ({ text: (scoreText(sc) || '–').padStart(width - 2), strong: !faint && sc?.score >= STRONG })
+    const cell = { price: () => ({ text: priceText(b) || '–' }), coding: () => score(b?.coding, COL.coding), agentic: () => score(b?.agentic, COL.agentic) }
     return row(E, [
       fixed(E, nameW, E.Button({ key: 'model-' + id, label: `${on ? '✓' : '○'} ${shortModel(id)}`, plain: true, dimColor: faint, onPress: () => a.toggleModel(id) })),
       fixed(E, COL.rung, T(E, rung, { dimColor: true })),
-      ...shownCols.map((c) => fixed(E, COL[c], T(E, cell[c](), { dimColor: faint }))),
+      ...shownCols.map((c) => { const v = cell[c](); return fixed(E, COL[c], T(E, v.text, { dimColor: faint, color: v.strong ? 'green' : undefined, tabular: true })) }),
     ], { columnGap: 0 })
   }
   for (const wk of ['agy', 'codex']) {
@@ -529,8 +577,8 @@ function settingsTab(E, m, w) {
     const workerOff = !s.workers[wk]
     const own = !!s.ladders?.[wk]
     const onCount = list.filter((id) => !s.disabled.has(id)).length
-    out.push(T(E, ' '), sectionNote(E, `${wk} models`, workerOff ? 'worker off' : `${own ? 'your ladder · ' : ''}${onCount} of ${list.length} on`))
-    out.push(head(wk))
+    out.push(T(E, ' '), sub(E, `${wk} models`, workerOff ? 'worker off' : `${own ? 'your ladder · ' : ''}${onCount} of ${list.length} on`))
+    out.push(head())
     ladder.forEach((id, i) => out.push(modelRow(wk, id, String(i + 1), workerOff)))
     if (overflow.length) {
       out.push(dim(E, '  overflow · when the Gemini pool runs low', { wrap: 'truncate' }))
@@ -543,7 +591,7 @@ function settingsTab(E, m, w) {
       const nb = bl && benchFor(bl, n.family)
       const figures = nb ? [priceText(nb), nb.coding ? `coding ${scoreText(nb.coding)}` : '', nb.agentic ? `agentic ${scoreText(nb.agentic)}` : ''].filter(Boolean).join(' · ') : n.efforts.join(' · ')
       out.push(spread(E,
-        row(E, [keep(E, chip(E, 'NEW', 'cyan')), keep(E, T(E, familyName(n.family), { weight: 'semibold' })), dim(E, `· ${figures}`, { wrap: 'truncate' })]),
+        row(E, [keep(E, T(E, '✦ NEW', { color: 'cyan', weight: 'semibold' })), keep(E, T(E, familyName(n.family), { weight: 'semibold' })), dim(E, `· ${figures}`, { wrap: 'truncate' })]),
         row(E, [
           E.Button({ key: 'ask-' + n.family, label: 'Ask Claude', plain: true, onPress: () => a.askModel(n) }),
           E.Button({ key: 'dismiss-' + n.family, label: 'Dismiss', plain: true, dimColor: true, onPress: () => a.dismissModel(n) }),
@@ -556,13 +604,13 @@ function settingsTab(E, m, w) {
   // USAGE CUT-OFFS: the two settings, then where each worker stands against them.
   const lim = s.limits
   const lowP = Math.round(lim.low * 100), stopP = Math.round(lim.stop * 100)
-  out.push(T(E, ' '), section(E, 'usage cut-offs'))
+  out.push(T(E, ' '), sub(E, 'usage cut-offs'))
   const cutLabel = (which, text) => row(E, [keep(E, T(E, CUT[which].glyph, { color: CUT[which].color })), T(E, text)])
-  out.push(field(E, w, cutLabel('low', 'Prefer the other worker below'),
+  out.push(field(E, wi, cutLabel('low', 'Prefer the other worker below'),
     E.Select({ key: 'limit-low', value: String(lowP), options: pctOptions(Math.max(5, stopP), 50, lowP), onSelect: (v) => a.setLimit('low', v) })))
-  out.push(field(E, w, cutLabel('stop', 'Never use a worker below'),
+  out.push(field(E, wi, cutLabel('stop', 'Never use a worker below'),
     E.Select({ key: 'limit-stop', value: String(stopP), options: pctOptions(0, Math.min(30, lowP), stopP), onSelect: (v) => a.setLimit('stop', v) })))
-  const barW = Math.max(10, Math.min(30, w - 6 - 2 - 22))
+  const barW = Math.max(10, Math.min(30, wi - 6 - 2 - 22))
   for (const wk of ['agy', 'codex']) {
     const left = usageLeft(m.quota, wk)
     if (left === null) continue
@@ -570,80 +618,100 @@ function settingsTab(E, m, w) {
     out.push(row(E, [
       fixed(E, 6, label(E, wk, workerColor(wk))),
       usageBar(E, left, lim, barW),
-      keep(E, T(E, `${pct(left).padStart(4)} ${state}`, { color: state === 'ok' ? 'green' : state === 'off' ? undefined : left < lim.stop ? 'red' : 'yellow', dimColor: state === 'off' || undefined })),
+      keep(E, T(E, `${pct(left).padStart(4)} ${state}`, { color: state === 'ok' ? 'green' : state === 'off' ? undefined : left < lim.stop ? 'red' : 'yellow', dimColor: state === 'off' || undefined, tabular: true })),
     ], { columnGap: 2 }))
   }
   out.push(dim(E, 'Usage left is the tighter of the 5-hour and weekly windows.', { wrap: 'wrap' }))
 
   // AUTO-BENCHMARK
-  out.push(T(E, ' '), ...autobenchSwitch(E, m))
+  out.push(T(E, ' '), sub(E, 'auto-benchmark'), ...autobenchSwitch(E, m))
 
   // BenchLM's licence asks for a credit and a link wherever its numbers appear.
   // The row wraps rather than truncates, so the credit is never cut off.
-  out.push(T(E, ' '), bl
-    ? row(E, [keep(E, dim(E, 'Prices and scores:')), keep(E, E.Link({ href: 'https://benchlm.ai', label: 'Data from BenchLM.ai' })), keep(E, dim(E, `· ${bl.dataAsOf || ''}`)), ...(w < 86 ? [] : [dim(E, '· per model, every effort alike')])], { flexWrap: 'wrap' })
-    : row(E, [keep(E, dim(E, 'Add prices and scores:')), keep(E, E.Link({ href: 'https://benchlm.ai/data/access', label: 'free BenchLM key' })), dim(E, '→ agent-handoff config benchlm-key <key>', { wrap: 'truncate' })], { flexWrap: 'wrap' }))
-  return out
+  const credit = bl
+    ? row(E, [keep(E, dim(E, 'Prices and scores:')), keep(E, E.Link({ href: 'https://benchlm.ai', label: 'Data from BenchLM.ai' })), keep(E, dim(E, `· ${bl.dataAsOf || ''}`)), ...(w < 86 ? [] : [dim(E, '· per model, every effort alike')])], { flexWrap: 'wrap', paddingX: 1 })
+    : row(E, [keep(E, dim(E, 'Add prices and scores:')), keep(E, E.Link({ href: 'https://benchlm.ai/data/access', label: 'free BenchLM key' })), dim(E, '→ agent-handoff config benchlm-key <key>', { wrap: 'truncate' })], { flexWrap: 'wrap', paddingX: 1 })
+  return [panel(E, 'settings', out), credit]
 }
 
 // Column widths come from the data, so no state word or model name overflows.
 const STATE_W = Math.max(...Object.values(STATE).map((s) => s.word.length)) + 2
 const MODEL_W = Math.max(...LADDER.map((x) => shortModel(x).length))
 
-function jobsTab(E, m) {
-  if (!m.jobs.length) return empty(E, 'No jobs yet', 'Handoffs appear here as Claude starts them.')
-  const w = Math.max(30, (m.cols || 64) - 2)
-  const taskW = Math.max(10, w - STATE_W - 6 - MODEL_W - 3)
-  return [section(E, 'jobs'), ...m.jobs.map((j) => {
+// Jobs: a table, newest first. ▸ marks the job the Live tab shows.
+function jobsTab(E, m, w) {
+  if (!m.jobs.length) return [panel(E, 'jobs', empty(E, 'No jobs yet', 'Handoffs appear here as Claude starts them.'))]
+  const wi = w - FRAME_W
+  const narrow = wi < NARROW
+  const stateW = narrow ? 2 : STATE_W
+  const taskW = Math.max(10, wi - 2 - stateW - 6 - MODEL_W - 4)
+  const head = row(E, [fixed(E, 2, T(E, '')), fixed(E, stateW, dim(E, narrow ? '' : 'STATE')), grow(E, [dim(E, `${'ID'.padEnd(5)}  ${'MODEL'.padEnd(MODEL_W)}  TASK`)])], { columnGap: 0 })
+  return [panel(E, 'jobs', [head, ...m.jobs.map((j) => {
     const s = stateOf(j.state)
+    const shown = j.id === m.job?.id
     // Rows are a coloured state, then one label-only Button: a Button made of
     // several Texts drew blank under the terminal's focus highlight.
     return row(E, [
-      fixed(E, STATE_W, T(E, `${s.glyph} ${s.word}`, { color: s.color })),
-      grow(E, [E.Button({ key: 'job-' + j.id, label: `#${j.id.slice(-4)}  ${shortModel(j.model).padEnd(MODEL_W)}  ${clip(j.task, taskW)}`, plain: true, onPress: () => m.actions.select(j.id) })]),
+      fixed(E, 2, T(E, shown ? '▸' : ' ', { weight: 'semibold' })),
+      fixed(E, stateW, T(E, narrow ? s.glyph : `${s.glyph} ${s.word}`, { color: s.color })),
+      grow(E, [E.Button({ key: 'job-' + j.id, label: `#${j.id.slice(-4)}  ${shortModel(j.model).padEnd(MODEL_W)}  ${clip(j.task, taskW)}`, plain: true, dimColor: !shown || undefined, onPress: () => m.actions.select(j.id) })]),
     ], { columnGap: 0 })
-  })]
+  })], { note: dim(E, `${m.jobs.length}`) })]
 }
 
 // The auto-benchmarking switch, drawn the same on the Bench and Settings tabs: on,
 // Claude rates every finished handoff and the ratings steer routing; off, nothing
-// is rated and routing is fixed. The chip keeps one width so the row doesn't shift.
+// is rated and routing is fixed.
 function autobenchSwitch(E, m) {
   const on = m.benchOn !== false
   return [
-    section(E, 'auto-benchmark'),
     spread(E,
-      row(E, [keep(E, chip(E, on ? 'ON ' : 'OFF', on ? 'green' : 'gray')), dim(E, on ? 'Claude rates every finished handoff' : 'Finished handoffs are not rated', { wrap: 'truncate' })]),
-      E.Button({ key: 'autobench', label: on ? 'Turn off' : 'Turn on', hotkey: 'a', plain: true, dimColor: on || undefined, onPress: m.actions.toggleAutobench })),
+      T(E, on ? 'Claude rates every finished handoff' : 'Finished handoffs are not rated', { wrap: 'truncate' }),
+      toggle(E, 'autobench', on, m.actions.toggleAutobench, 'a')),
     dim(E, on ? 'Ratings pick the model for the next task of that kind.' : 'Each kind of task uses a fixed model.', { wrap: 'wrap' }),
   ]
 }
 
-// Bench as race lanes: models ranked by pass rate, then speed, per kind of task.
+// Bench: pass rates per kind of task, as tables ranked by pass rate, then speed.
+// Columns give way from the right when the panel is narrow.
+const BCOL = { runs: 6, median: 9, tokens: 8, stalls: 8 }
+const BDROP = ['stalls', 'tokens', 'median', 'runs']
 function benchTab(E, m, w) {
-  const out = [...autobenchSwitch(E, m), T(E, ' ')]
-  if (!m.bench?.length) return [...out, ...empty(E, 'No finished jobs in the ledger yet', 'Pass rates per model appear after the first runs.')]
-  // The meter takes what the rank, name and pass rate leave, up to 16 cells.
-  const meterW = Math.max(6, Math.min(16, w - 5 - MODEL_W - 9 - 4))
-  const kinds = [...new Set(m.bench.map((r) => r.kind))]
+  const wi = w - FRAME_W
+  const out = [panel(E, 'auto-benchmark', autobenchSwitch(E, m))]
+  if (!m.bench?.length) return [...out, panel(E, 'pass rates', empty(E, 'No finished jobs in the ledger yet', 'Pass rates per model appear after the first runs.'))]
+  const meterW = Math.max(6, Math.min(12, wi - 3 - MODEL_W - 5 - 4 - 30))
+  const fixedW = 3 + MODEL_W + 1 + meterW + 6
+  const cols = ['runs', 'median', 'tokens', 'stalls']
+  for (const c of BDROP) {
+    if (fixedW + cols.reduce((n, k) => n + BCOL[k], 0) <= wi) break
+    cols.splice(cols.indexOf(c), 1)
+  }
+  const HEAD = { runs: 'RUNS', median: 'MEDIAN', tokens: 'TOKENS', stalls: 'STALLS' }
+  // Right-aligned with a spare cell, and never wrapped: a DOM surface can make a box
+  // a hair narrower than its text, and a padded cell that just fits would wrap.
+  const right = (c, text, props = {}) => fixed(E, BCOL[c], T(E, String(text).padStart(BCOL[c] - 1), { tabular: true, wrap: 'clip', ...props }))
+  const body = []
   let unverified = 0
-  for (const kind of kinds) {
-    out.push(section(E, kind))
+  const kinds = [...new Set(m.bench.map((r) => r.kind))]
+  kinds.forEach((kind, k) => {
     const lanes = m.bench.filter((r) => r.kind === kind).sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0) || (a.medS ?? 1e9) - (b.medS ?? 1e9))
+    if (k) body.push(T(E, ' '))
+    body.push(sub(E, kind, `${lanes.length} model${lanes.length === 1 ? '' : 's'}`))
+    body.push(row(E, [fixed(E, 3, dim(E, '#')), fixed(E, MODEL_W + 1, dim(E, 'MODEL')), fixed(E, meterW + 6, dim(E, 'PASS')), ...cols.map((c) => right(c, HEAD[c], { dimColor: true }))], { columnGap: 0 }))
     lanes.forEach((r, i) => {
       unverified += r.unverified
       const c = r.rate >= 0.85 ? 'green' : r.rate >= 0.7 ? 'yellow' : 'red'
-      // Two lines per model: rank · name · meter · pass rate, then the run stats.
-      out.push(row(E, [
-        keep(E, chip(E, ['1st', '2nd', '3rd'][i] || `${i + 1}th`, c)),
-        fixed(E, MODEL_W, T(E, shortModel(r.model), { weight: 'semibold', wrap: 'truncate' })),
+      const cell = { runs: () => right('runs', r.runs), median: () => right('median', fmtDur(r.medS)), tokens: () => right('tokens', r.medTok ? `${Math.round(r.medTok / 1000)}k` : '–'), stalls: () => right('stalls', r.stalls || 0, r.stalls ? { color: 'red' } : { dimColor: true }) }
+      body.push(row(E, [
+        fixed(E, 3, dim(E, String(i + 1))),
+        fixed(E, MODEL_W + 1, T(E, shortModel(r.model), { weight: i === 0 ? 'semibold' : undefined, wrap: 'truncate' })),
         meter(E, r.rate, meterW, c),
-        keep(E, T(E, `${pct(r.rate).padStart(4)} pass`, { color: c, weight: 'semibold' })),
-      ]))
-      out.push(row(E, [fixed(E, 5, T(E, '')), grow(E, [dim(E, [`${r.runs} run${r.runs === 1 ? '' : 's'}`, `${fmtDur(r.medS)} median`, r.medTok ? `${Math.round(r.medTok / 1000)}k tok` : '', `${r.stalls} stalls`, `${r.questions || 0} questions`].filter(Boolean).join(' · '), { wrap: 'truncate' })])]))
+        fixed(E, 6, T(E, pct(r.rate).padStart(5), { color: c, weight: 'semibold', tabular: true })),
+        ...cols.map((x) => cell[x]()),
+      ], { columnGap: 0 }))
     })
-    out.push(T(E, ' '))
-  }
-  out.push(dim(E, `Claude's rating or the test gate counts as a full run; the worker's own "done" counts half.${unverified ? ` ${unverified} run(s) still need a rating.` : ''}`, { wrap: 'wrap' }))
-  return out
+  })
+  body.push(T(E, ' '), dim(E, `Claude's rating or the test gate counts as a full run; the worker's own "done" counts half.${unverified ? ` ${unverified} run(s) still need a rating.` : ''}`, { wrap: 'wrap' }))
+  return [...out, panel(E, 'pass rates', body)]
 }
