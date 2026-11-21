@@ -10,6 +10,8 @@ Claude stays in charge. It writes the brief, picks the worker and model, answers
 - **The `/handoff` pane.** It opens on its own when a handoff starts. It shows a timeline of the handoff (brief, pickup, each tool call, questions, answers, test result, rating), what the worker is doing now, and how long it has been quiet. It has three tabs: **Live**, **Jobs** and **Bench**.
 - **A band above the prompt** while a worker runs, and toasts when it picks up, asks a question, finishes or stalls.
 - **Several jobs at once.** A Codex job and an agy job can run side by side, and jobs started from other Claude Code sessions show up too. The band gives each one its own row, and the pane lists them all with live progress, so you don't have to switch between them.
+- **Stop or change model from the pane.** Stop a job that's going the wrong way, or rerun it on a different model with one click. Claude is told either way, so it doesn't restart or wait on it.
+- **Settings in the pane.** Choose which workers and models routing may use, the default worker, and your own usage cut-offs.
 - **Answer from the pane.** When the worker asks a question, type the answer in the pane. The worker carries on in the same conversation and Claude is told.
 - **Automatic benchmarking.** When a handoff finishes, Claude reviews it and rates it pass, partial or fail without being asked. The ratings decide which model the next task of that kind gets. You can turn this off.
 - **A watchdog.** It stops a worker that stalls, loops on the same call, or runs past its time limit, and tells Claude what happened.
@@ -54,11 +56,39 @@ The `/handoff` pane opens and follows the job. Workers are **read-only by defaul
 | `/handoff` | Live tab, following the latest job |
 | `/handoff jobs` | Recent jobs; select one to see its timeline |
 | `/handoff bench` | Pass rate, speed and token use per model and kind of task, plus the auto-benchmark switch |
+| `/handoff settings` | Workers, models, default worker, usage cut-offs and auto-benchmarking |
 | `/handoff <job id>` | One job's timeline |
 
 When more than one job is active, the Live tab starts with an **Active** list: one row per job with its worker, state, model, what it's doing right now and how long it has been running. Jobs waiting on your answer stay listed for 30 minutes, and finished jobs for a minute. `▸` marks the job whose full timeline is shown below; select another row to switch. The band above the prompt shows the same jobs, one row each, and puts jobs with a question first when there isn't room for all of them.
 
-Pane keys: `c` cancels the running job, `e` expands full replies, `o`/`n` step to older or newer jobs, `l` goes back to following the latest job, and `a` (on the Bench tab) switches auto-benchmarking.
+Under each job's timeline:
+
+- **Stop** (`c`) ends a running job, or drops a queued one.
+- **Change model** (`m`) lists every model you have turned on. Pick one and the same task runs again on it as a new job (a running job is stopped first). The pane follows the rerun, and Claude reviews it.
+
+Other keys: `e` expands full replies, `o`/`n` step to older or newer jobs, `l` goes back to following the latest job, `a` switches auto-benchmarking, and `1`–`4` switch tabs.
+
+### Settings
+
+The **Settings** tab (`/handoff settings` or `4`) changes how work is routed. Every change applies to the next handoff.
+
+| Setting | What it does |
+|---|---|
+| **Workers** | Turn agy or Codex off entirely, for example if you only have one of them. A worker that's off is never used, even when named. |
+| **Default worker** | **auto** picks per task from usage left and pass rates; **agy** or **codex** sends every handoff there unless Claude or a slash command names the other. |
+| **Models** | Turn individual models off. Routing skips them and moves to the next model on that worker's ladder (cheapest first). A model you pin yourself with `--model` is still used. |
+| **Usage cut-offs** | *Prefer the other worker below* (default 20%): when a worker has less usage left than this and the other has more, the other one gets the task. *Never use a worker below* (default off): a worker under this is not used at all, and Claude tells you why. |
+| **Auto-benchmark** | The same switch as on the Bench tab. |
+
+Usage left means the tighter of the 5-hour and weekly windows, as shown in the meters at the top of the pane. The same settings are available from a terminal:
+
+```sh
+agent-handoff config worker agy off
+agent-handoff config model gpt-6-luna:low off
+agent-handoff config limit low 25      # prefer the other worker under 25% left
+agent-handoff config limit stop 5      # never use a worker under 5% left
+agent-handoff config                   # show everything
+```
 
 ## Auto-benchmarking
 
@@ -81,6 +111,24 @@ Each rating costs a short Claude turn. Turn auto-benchmarking off if you'd rathe
 | For one shell | `AGENT_HANDOFF_AUTOBENCH=0` | `AGENT_HANDOFF_AUTOBENCH=1` |
 
 With it off, finished jobs aren't rated, each kind of task uses a fixed model, and the pane stops showing "Awaiting Claude's review". Jobs are still logged, so the ledger has data when you turn it back on. Claude still reads the diff of any result it relies on, because that is about correctness, not benchmarking.
+
+## Screenshots and recordings
+
+`agent-handoff demo` fills a separate folder (`~/.agent-handoff-demo`; your real data is never touched) with sample handoffs and keeps them moving, with no workers, no model turns and no cost:
+
+- a Codex job implementing a CSV export, from brief to passing tests to Claude's rating, in about 35 seconds
+- an agy job tracing time-zone handling, mid-run
+- an agy job waiting on a question; answer it from the pane and it carries on
+- six finished jobs for the Jobs tab, a ledger that fills the Bench tab, and usage meters
+
+Stop, Change model, Answer and the Settings tab all work. The scene restarts every 150 seconds (`--cycle 300` to change that), so you can retake a recording.
+
+```sh
+agent-handoff demo                                 # keep this running
+AGENT_HANDOFF_HOME=~/.agent-handoff-demo claude    # in another terminal, then type /handoff
+```
+
+For the Claude Code desktop app on macOS, run `launchctl setenv AGENT_HANDOFF_HOME ~/.agent-handoff-demo` and reopen the app. Run `launchctl unsetenv AGENT_HANDOFF_HOME` when you're done.
 
 ## Coming from agy-relay
 
@@ -111,6 +159,7 @@ agent-handoff status          # what the latest job is doing
 agent-handoff review          # task, summary, diff and test result in one place
 agent-handoff bench           # pass rates per kind of task and model
 agent-handoff quota           # usage left on each worker
+agent-handoff retry <id> --model gpt-6.2-sol:medium   # stop (if running) and rerun on another model
 agent-handoff config backend auto|agy|codex
 agent-handoff doctor          # check node, workers, sign-in, PATH and the pane
 ```

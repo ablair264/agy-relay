@@ -44,6 +44,7 @@ agent-handoff run --dir <repo> [--backend auto|codex|agy] [--write] [--tests "<g
 - **Read-only is the default** (agy plan mode and sandbox; codex `read-only` sandbox). Add `--write` only for edits (agy accept-edits; codex `workspace-write`, approvals never).
 - **`--dir`** is the workspace the worker reads and writes. Use the narrowest folder that holds every file it needs.
 - **Write the task data-first**: name the files, the questions and the output wanted. Point at files rather than pasting big context; a 17 KB pasted prompt has hung agy before.
+- **The user's settings are binding.** `run` and `route` exit 2 with a clear message when the user has turned a worker off, turned off every model on it, or set a "never use below" usage cut-off that the worker is under. Tell the user what the message says. Don't work around it with another flag; only `--model` overrides a turned-off model, and only when the user asked for that model.
 - **`--tests`** is run by the relay after the worker reports done. The worker's own "tests pass" is never trusted.
 - **One run at a time per backend** (concurrent agy runs hang each other). A `run` or `answer` while that backend is busy waits in a queue (first come, first served), prints `queued: … position N`, shows as `queued` in the pane, and starts on its own; `cancel <id>` drops it. `--no-wait` exits 3 instead; `--wait-max 4h` caps the wait. A codex job and an agy job run side by side.
 
@@ -111,11 +112,17 @@ The user can also run `/handoff autobench on|off` or use the switch on the pane'
 
 The mod reads `~/.agent-handoff` and shows:
 
-- **The `/handoff` pane**, which opens by itself when you run `agent-handoff run`. It has a handoff timeline (brief, pickup, each tool call, question, answer, gate, rating), what the worker is doing now, an idle bar against the stall limit, and an activity strip in the Desktop app. Tabs: Live, Jobs, Bench (with the auto-benchmark switch). It has a Cancel button, and an answer field when the worker asks. A finished, unrated job shows "Awaiting Claude's review" while auto-benchmarking is on.
+- **The `/handoff` pane**, which opens by itself when you run `agent-handoff run`. It has a handoff timeline (brief, pickup, each tool call, question, answer, gate, rating), what the worker is doing now, an idle bar against the stall limit, and an activity strip in the Desktop app. Tabs: Live, Jobs, Bench (with the auto-benchmark switch) and Settings (workers, models, default worker, usage cut-offs). It has Stop and Change model buttons, and an answer field when the worker asks. A finished, unrated job shows "Awaiting Claude's review" while auto-benchmarking is on.
 - **A band above the prompt** while a job runs or waits on a question, and toasts when the worker picks up, asks, finishes or stalls.
 - **Every active job at once.** When a codex job and an agy job run side by side (or another session has a job going), the band gives each its own row and the Live tab opens with an Active list showing each job's state and current step. Toasts and the auto-benchmark request cover every job, not just the newest.
 
-If the user answers the worker from the pane, the mod sends you a message saying so. The relay has already resumed the job, so don't `answer` it again. Follow it with `agent-handoff status <id>`, then check and rate the result when it finishes.
+The user can also act from the pane, and the mod sends you a message each time:
+
+- **Answered the worker's question.** The relay has already resumed the job, so don't `answer` it again. Follow it with `agent-handoff status <id>`, then check and rate the result when it finishes.
+- **Stopped a job.** Your waiting `run` exits 15 (cancelled). Don't restart it unless the user asks.
+- **Changed the model.** The job was stopped (if it was still going) and its task rerun on the model they picked as a new job, with `retry_of` set in its meta. Follow the newest job with `agent-handoff status`, and check and rate it when it finishes. Don't start it again yourself.
+
+To rerun a job yourself, for example when the user asks for a stronger model, use `agent-handoff retry <id> --model <id>` (or `--backend codex|agy`). It stops the job if it is still running and reruns the same task, directory, write mode and gate.
 
 ## Model routing
 
@@ -128,7 +135,7 @@ agent-handoff models             # each backend's ladder checked against what it
 Each backend has a six-rung ladder, cheapest first.
 
 - **agy** (Gemini 4; 3.8 Flash is retired): Hydrogen low → Neon low → Hydrogen high → Neon medium → Neon high → Neon xhigh. Each rung is the cheapest model at its level on Artificial Analysis figures; Hydrogen medium/xhigh and every Argon effort are left out because a cheaper Neon scores higher. Hydrogen low is weak at agentic work (Terminal-Bench 7%), so keep it to lookups and digests. Claude and GPT models in agy are never used.
-- **codex** (`model:effort`): luna low → luna medium → sol 6.1 low → medium → high → astra medium.
+- **codex** (`model:effort`): luna low → luna medium → Sol 6.2 low → medium → high → Astra 6.2 medium (Sol 6.1 and Astra 6 are retired).
 
 Each kind starts at a rung: search rung 1; analysis, scaffold and tests rung 2; implement rung 3; review rung 5. `--complex` adds two rungs.
 

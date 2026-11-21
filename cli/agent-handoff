@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, LEDGER } from '../lib/store.mjs';
 import { holder, pidAlive, queued, releaseLock, tryLock, waitTurn } from '../lib/queue.mjs';
 import { BACKENDS, ORDER } from '../lib/backends/index.mjs';
-import { config, setConfig, CONFIG } from '../lib/config.mjs';
+import { config, modelOn, setConfig, workerOn, CONFIG } from '../lib/config.mjs';
+import { MODELS } from '../lib/backends/index.mjs';
 import { KINDS, LADDER, pct, route, stats } from '../lib/route.mjs';
 import { EXIT, brief, runTurn } from '../lib/run.mjs';
 import { reviewPacket } from '../lib/review.mjs';
@@ -19,6 +20,7 @@ const USAGE = `agent-handoff <command>
   status [id]                     current state of a job (default: latest)
   tail   [id] [-n 30]             the job's event log
   answer <id> "text"              reply to a question / nudge a stalled job (same conversation)
+  retry  <id> [--model M | --backend B]   stop the job if it runs, then rerun its task (on another model)
   review <id>                     task, agy's summary, git diff, gate and warnings in one packet
   verify <id> pass|partial|fail [--note "why"]   Claude's verdict; feeds model routing
   bench  [--kind K]               success rate, time and tokens per kind x model
@@ -26,8 +28,11 @@ const USAGE = `agent-handoff <command>
   quota                           remaining agy (Gemini) quota and any Codex usage limit
   models                          ladder models each backend has
   autobench [on|off]              show or switch auto-benchmarking (Claude rates every finished handoff)
-  config [key value]              show or set: backend auto|agy|codex, autobench on|off
-  cancel [id]                     stop a running job
+  config [key value]              show or set settings:
+           backend auto|agy|codex · autobench on|off · worker agy|codex on|off
+           model <id> on|off · limit low <pct> (prefer the other worker below) · limit stop <pct> (never use below)
+  demo   [--dir PATH] [--once]   sample jobs for screenshots, animated until Ctrl+C (see README)
+  cancel [id]                     stop a running or queued job
 
 run/route options:
   --backend auto|agy|codex   which worker (default: config, then auto)
@@ -43,7 +48,7 @@ run/route options:
 
 function parse(argv) {
   const o = { _: [] };
-  const val = new Set(['kind', 'dir', 'tests', 'model', 'timeout', 'stall', 'task-file', 'note', 'n', 'by', 'backend', 'wait-max']);
+  const val = new Set(['kind', 'dir', 'tests', 'model', 'timeout', 'stall', 'task-file', 'note', 'n', 'by', 'backend', 'wait-max', 'retry-of', 'cycle']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--') || a === '-n') {
@@ -89,6 +94,7 @@ async function cmdRun(o) {
     id, backend: r.backend, bin: be.BIN, kind: r.kind, model: r.model, write, dir, tests: o.tests || null, sandbox: o.sandbox !== false,
     timeout_s: secs(o.timeout, 1800), stall_s: secs(o.stall, be.defaults.stall_s), startup_s: be.defaults.startup_s,
     created: new Date().toISOString(), route_reasons: r.reasons, task: task.slice(0, 300),
+    ...(o['retry-of'] ? { retry_of: o['retry-of'] } : {}),
   });
   printRoute(r);
   const turn = await takeTurn(o, id, r.backend, true);
@@ -131,11 +137,20 @@ async function takeTurn(o, id, backend, fresh) {
   }
 }
 
+// Jobs written by `agent-handoff demo` have no real worker behind them: the demo
+// process acts on a request file instead, so the pane's buttons work in screenshots.
+function demoRequest(id, req) {
+  writeJSON(jobFile(id, 'demo-request.json'), { ...req, at: Date.now() });
+  console.log(`demo job ${id}: ${req.type} sent to the demo`);
+  return 0;
+}
+
 async function cmdAnswer(o) {
   const id = resolveJob(o._[1]);
   const text = o._.slice(2).join(' ').trim();
   if (!text) throw new Error('answer needs text');
   const meta = readJSON(jobFile(id, 'meta.json'));
+  if (meta.demo) return demoRequest(id, { type: 'answer', text });
   const st = readJSON(jobFile(id, 'status.json'), {});
   if (/starting|working/.test(st.state) && pidAlive(st.pid)) throw new Error(`job ${id} is still running; wait or cancel it`);
   if (!meta.conversation_id) throw new Error(`job ${id} has no ${meta.backend || 'agy'} conversation to resume (it never started)`);
@@ -215,6 +230,7 @@ function cmdJobs() {
 
 function cmdCancel(o) {
   const id = resolveJob(o._[1]);
+  if (readJSON(jobFile(id, 'meta.json'), {}).demo) return demoRequest(id, { type: 'cancel' });
   const s = readJSON(jobFile(id, 'status.json'), {});
   if (!pidAlive(s.pid)) { console.log(`${id} is not running`); return 0; }
   process.kill(s.pid, 'SIGTERM');
@@ -222,12 +238,36 @@ function cmdCancel(o) {
   return 0;
 }
 
+// Stop a job (if it is still running or queued), then hand its task out again:
+// to the model or backend given, or to whatever routing picks now.
+async function cmdRetry(o) {
+  const id = resolveJob(o._[1]);
+  const meta = readJSON(jobFile(id, 'meta.json'), {});
+  if (meta.demo) return demoRequest(id, { type: 'retry', model: o.model || null, backend: o.backend || null });
+  const st = readJSON(jobFile(id, 'status.json'), {});
+  if (/starting|working|queued/.test(st.state) && pidAlive(st.pid)) {
+    process.kill(st.pid, 'SIGTERM');
+    const t0 = Date.now();
+    while (pidAlive(st.pid) && Date.now() - t0 < 20e3) await new Promise((r) => setTimeout(r, 250));
+    if (pidAlive(st.pid)) throw new Error(`job ${id} did not stop (relay pid ${st.pid})`);
+    console.log(`stopped ${id}`);
+  }
+  const task = (fs.readFileSync(jobFile(id, 'task.md'), 'utf8').split('\nTASK:\n')[1] || meta.task || '').trim();
+  if (!task) throw new Error(`job ${id} has no task to rerun`);
+  console.log(`rerunning ${id}${o.model ? ` on ${o.model}` : o.backend ? ` on ${o.backend}` : ''}`);
+  return cmdRun({
+    ...o, _: ['run', task], dir: meta.dir, write: !!meta.write, tests: o.tests || meta.tests || undefined, kind: o.kind || meta.kind,
+    backend: o.model ? undefined : (o.backend || undefined), 'retry-of': id,
+  });
+}
+
 const commands = {
   review: (o) => { console.log(reviewPacket(resolveJob(o._[1]))); return 0; },
-  run: cmdRun, answer: cmdAnswer, status: cmdStatus, tail: cmdTail, verify: cmdVerify, bench: cmdBench, jobs: cmdJobs, cancel: cmdCancel,
+  run: cmdRun, retry: cmdRetry, answer: cmdAnswer, status: cmdStatus, tail: cmdTail, verify: cmdVerify, bench: cmdBench, jobs: cmdJobs, cancel: cmdCancel,
   route: (o) => { printRoute(route({ task: taskOf(o), kind: o.kind, write: !!o.write, complex: o.complex, model: o.model, backend: o.backend, explore: false })); return 0; },
   quota: cmdQuota, models: cmdModels, config: cmdConfig,
   autobench: (o) => cmdConfig({ _: ['config', ...(o._[1] ? ['autobench', o._[1]] : [])] }),
+  demo: async (o) => (await import('../lib/demo.mjs')).demo(o),
   setup: (o) => {
     const s = setup({ force: !!o.force });
     const d = doctor();
@@ -264,10 +304,21 @@ function cmdModels() {
 }
 
 function cmdConfig(o) {
-  const [, key, value] = o._;
-  if (key) setConfig(key, value);
+  const [, key, ...values] = o._;
+  if (key) setConfig(key, ...values);
   const c = config();
-  console.log(`backend   ${c.backend}\nautobench ${c.autobench ? 'on: Claude reviews and rates every finished handoff; ratings steer routing' : 'off: no automatic reviews; fixed routing'}\n(${CONFIG}; env AGENT_HANDOFF_BACKEND / AGENT_HANDOFF_AUTOBENCH override)`);
+  const lines = [
+    `backend   ${c.backend}`,
+    `autobench ${c.autobench ? 'on: Claude reviews and rates every finished handoff; ratings steer routing' : 'off: no automatic reviews; fixed routing'}`,
+    `workers   ${ORDER.map((b) => `${b} ${workerOn(c, b) ? 'on' : 'off'}`).join(', ')}`,
+    `limits    prefer the other worker below ${pct(c.limits.low)} left · ${c.limits.stop ? `never use a worker below ${pct(c.limits.stop)} left` : 'no hard stop'}`,
+  ];
+  for (const w of ORDER) {
+    lines.push(`${w} models${workerOn(c, w) ? '' : ' (worker off)'}`);
+    for (const m of MODELS[w]) lines.push(`  ${modelOn(c, m) ? '✓' : '✗'} ${m}${BACKENDS[w].LADDER.includes(m) ? '' : '  (overflow)'}`);
+  }
+  lines.push(`(${CONFIG}; env AGENT_HANDOFF_BACKEND / AGENT_HANDOFF_AUTOBENCH override)`);
+  console.log(lines.join('\n'));
   return 0;
 }
 

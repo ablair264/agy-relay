@@ -8,8 +8,32 @@ export const LADDER = [
   'gemini-4-argon-medium', 'gemini-4-argon-high',
   // retired: kept so old ledger rows still sort
   'gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-high', 'gemini-4-argon-low',
-  'gpt-6-luna:low', 'gpt-6-luna:medium', 'gpt-6.1-sol:low', 'gpt-6.1-sol:medium', 'gpt-6.1-sol:high', 'gpt-6-astra:medium',
+  'gpt-6-luna:low', 'gpt-6-luna:medium', 'gpt-6.2-sol:low', 'gpt-6.2-sol:medium', 'gpt-6.2-sol:high', 'gpt-6.2-astra:medium',
+  // retired codex models: kept so old ledger rows still sort
+  'gpt-6.1-sol:low', 'gpt-6.1-sol:medium', 'gpt-6.1-sol:high', 'gpt-6-astra:medium',
 ]
+
+// Every model each worker may run, ladder (cheapest first) then overflow models.
+// Mirrors lib/backends (the mod has no Node imports); tests/config.test.mjs keeps them in step.
+export const MODELS = {
+  agy: ['gemini-4-hydrogen-low', 'gemini-4-neon-low', 'gemini-4-hydrogen-high', 'gemini-4-neon-medium', 'gemini-4-neon-high', 'gemini-4-neon-xhigh', 'gemini-4-argon-medium', 'gemini-4-argon-high'],
+  codex: ['gpt-6-luna:low', 'gpt-6-luna:medium', 'gpt-6.2-sol:low', 'gpt-6.2-sol:medium', 'gpt-6.2-sol:high', 'gpt-6.2-astra:medium'],
+}
+export const OVERFLOW = new Set(['gemini-4-argon-medium', 'gemini-4-argon-high'])
+export const WORKERS = { agy: 'Antigravity · Gemini', codex: 'Codex CLI · GPT' }
+export const backendOfModel = (m = '') => (/^gemini-/.test(m) ? 'agy' : 'codex')
+
+// Settings as the CLI stores them, with defaults filled in.
+export function settingsOf(c) {
+  c = c || {}
+  return {
+    backend: c.backend || 'auto',
+    autobench: (c.autobench ?? c.bench) !== false,
+    workers: { agy: c.workers?.agy !== false, codex: c.workers?.codex !== false },
+    disabled: new Set(Array.isArray(c.disabled_models) ? c.disabled_models : []),
+    limits: { low: c.limits?.low ?? 0.2, stop: c.limits?.stop ?? 0 },
+  }
+}
 
 export const LIVE = new Set(['starting', 'working'])
 
@@ -37,7 +61,7 @@ export const AGY = '#4c8df6'
 export const CODEX = '#10a37f'
 export const workerColor = (w) => (w === 'codex' ? CODEX : AGY)
 
-// gemini-4-hydrogen-high -> Hydrogen high; gpt-6.1-sol:medium -> Sol 6.1 medium
+// gemini-4-hydrogen-high -> Hydrogen high; gpt-6.2-sol:medium -> Sol 6.2 medium
 export const shortModel = (m = '') => {
   const g = m.match(/^gpt-([\d.]+)-([a-z]+)(?::(\w+))?$/)
   if (g) return `${g[2][0].toUpperCase()}${g[2].slice(1)} ${g[1]}${g[3] ? ` ${g[3]}` : ''}`

@@ -44,3 +44,28 @@ test('data in ~/.agy-relay moves to ~/.agent-handoff on first use', () => {
   assert.ok(fs.existsSync(path.join(H, '.agent-handoff', 'ledger.jsonl')));
   assert.ok(!fs.existsSync(path.join(H, '.agy-relay')));
 });
+
+test('worker, model and limit settings round-trip, and bad values are refused', () => {
+  const HOME = path.join(tmp, 'c');
+  const env = { CLAUDE_X: '1', AGENT_HANDOFF_HOME: HOME, HOME: tmp };
+  run(['config', 'worker', 'agy', 'off'], env);
+  run(['config', 'model', 'gpt-6-luna:low', 'off'], env);
+  run(['config', 'limit', 'low', '30'], env);
+  const out = run(['config', 'limit', 'stop', '10%'], env).stdout;
+  assert.match(out, /workers\s+agy off, codex on/);
+  assert.match(out, /prefer the other worker below 30% left · never use a worker below 10% left/);
+  assert.match(out, /✗ gpt-6-luna:low/);
+  const c = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
+  assert.deepEqual([c.workers.agy, c.disabled_models, c.limits], [false, ['gpt-6-luna:low'], { low: 0.3, stop: 0.1 }]);
+  run(['config', 'model', 'gpt-6-luna:low', 'toggle'], env);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')).disabled_models, []);
+  for (const bad of [['worker', 'claude', 'off'], ['model', 'llama-9', 'off'], ['limit', 'low', '140'], ['limit', 'soft', '5']]) {
+    assert.notEqual(run(['config', ...bad], env).status, 0, bad.join(' '));
+  }
+});
+
+test("the pane's model lists match the backends", async () => {
+  const { MODELS } = await import('../lib/backends/index.mjs');
+  const data = await import('../hooks/data.js');
+  assert.deepEqual(data.MODELS, MODELS);
+});

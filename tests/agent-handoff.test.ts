@@ -388,3 +388,130 @@ test('an older job finishing while a newer one runs still gets its toast and rev
   expect(submitted.length).toBe(1)
   expect(submitted[0]).toContain(`agent-handoff review ${ID}`)
 })
+
+// Settings tab, Stop and Change model. fakeCli (above) stands in for `agent-handoff config`.
+function settingsCli(on: any, files: Record<string, string>, runs: string[][]) {
+  on('process.run', ($: any, e: any) => {
+    runs.push(e.argv)
+    const a = e.argv.slice(e.argv.indexOf('config') + 1)
+    if (e.argv.includes('config')) {
+      const c = JSON.parse(files[`${HOME}/config.json`] || '{}')
+      if (a[0] === 'worker') c.workers = { ...(c.workers || {}), [a[1]]: a[2] === 'on' }
+      if (a[0] === 'model') c.disabled_models = a[2] === 'off' ? [...(c.disabled_models || []), a[1]] : (c.disabled_models || []).filter((m: string) => m !== a[1])
+      if (a[0] === 'limit') c.limits = { low: 0.2, stop: 0, ...(c.limits || {}), [a[1]]: Number(a[2]) / 100 }
+      if (a[0] === 'backend') c.backend = a[1]
+      files[`${HOME}/config.json`] = JSON.stringify(c)
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+}
+
+test('the settings tab turns workers and models on and off, picks the default worker and sets cut-offs', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  const runs: string[][] = []
+  settingsCli(on, files, runs)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: 'settings' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '── WORKERS' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Antigravity · Gemini$/ })).toBeDefined()
+  await ui.press({ key: 'worker-agy' })
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'worker', 'agy', 'off'])
+  await clock.advance(1000)
+  expect(await ui.find({ key: 'worker-agy' })).toMatchObject({ props: { label: 'Turn on' } })
+  expect(await ui.find({ type: 'Text', text: 'worker off' })).toBeDefined()
+
+  await ui.press({ key: 'model-gpt-6-luna:low' })
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'model', 'gpt-6-luna:low', 'off'])
+  await clock.advance(1000)
+  expect(await ui.find({ key: 'model-gpt-6-luna:low' })).toMatchObject({ props: { label: 'Turn on Luna 6 low' } })
+  expect(await ui.find({ type: 'Text', text: '5 of 6 on' })).toBeDefined()
+
+  await ui.press({ key: 'backend-codex' })
+  expect(runs.at(-1)!.slice(-3)).toEqual(['config', 'backend', 'codex'])
+  await clock.advance(1000)
+  expect(await ui.find({ key: 'backend-codex' })).toMatchObject({ props: { label: '● codex' } })
+
+  await ui.press({ key: 'low-up' })
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'low', '25'])
+  await ui.press({ key: 'stop-down' }) // already 0: nothing to run
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'low', '25'])
+  await ui.press({ key: 'stop-up' })
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'limit', 'stop', '5'])
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: '  5%' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Stop ends a running job and tells Claude it was the user', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 30e3 })
+  fixture(on, workingStatus)
+  const runs: string[][] = []
+  const submitted: string[] = []
+  on('process.run', ($: any, e: any) => { runs.push(e.argv); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ key: 'cancel' })).toMatchObject({ props: { label: 'Stop' } })
+  await ui.press({ key: 'cancel' })
+  expect(runs[0].slice(-2)).toEqual(['cancel', ID])
+  expect(submitted[0]).toMatch(/^The user stopped agent-handoff job .* Don't restart it unless they ask/)
+  await ui.unmount()
+})
+
+test('Change model lists the enabled models and reruns the job on the one picked', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 30e3 })
+  const files = fixture(on, workingStatus)
+  files[`${HOME}/config.json`] = JSON.stringify({ disabled_models: ['gemini-4-neon-xhigh'], workers: { agy: true, codex: false } })
+  const runs: string[][] = []
+  const submitted: string[] = []
+  on('process.run', ($: any, e: any) => { runs.push(e.argv); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  await ui.press({ key: 'change-model' })
+  expect(await ui.find({ type: 'Text', text: '── STOP AND RESTART ON' })).toBeDefined()
+  expect(await ui.find({ key: 'pick-gemini-4-neon-high' })).toBeDefined()
+  expect(await ui.find({ key: 'pick-gemini-4-hydrogen-high' })).toBeUndefined() // the job's own model
+  expect(await ui.find({ key: 'pick-gemini-4-neon-xhigh' })).toBeUndefined() // turned off
+  expect(await ui.find({ key: 'pick-gpt-6.2-sol:low' })).toBeUndefined() // codex is off
+  expect(await ui.find({ type: 'Text', text: /^7 models are turned off in Settings/ })).toBeDefined()
+  await ui.press({ key: 'pick-gemini-4-neon-high' })
+  expect(runs[0].slice(0, 2)).toEqual(['/bin/sh', '-c'])
+  expect(runs[0][2]).toContain('retry "$2" --model "$3"')
+  expect(runs[0].slice(-2)).toEqual([ID, 'gemini-4-neon-high'])
+  expect(submitted[0]).toMatch(/stopped agent-handoff job .* restarted the same task on gemini-4-neon-high/)
+  expect(await ui.find({ type: 'Text', text: '── STOP AND RESTART ON' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('demo jobs never message Claude when stopped from the pane', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 30e3 })
+  fixture(on, workingStatus, {}, { demo: true })
+  const submitted: string[] = []
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  await ui.press({ key: 'cancel' })
+  expect(submitted).toEqual([])
+  await ui.unmount()
+})

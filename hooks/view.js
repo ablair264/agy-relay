@@ -3,7 +3,7 @@
 // Style: monospace throughout, small uppercase section labels, straight rules,
 // no bordered boxes. Every Text is mono so padded columns line up in Desktop too.
 import {
-  AGY, CLAUDE, CODEX, LADDER, LIVE, STATE, activitySvg, clip, fmtDur, fmtTok, idleBar, pct, shortModel, stateOf, timeline, toolKind, workerColor, workerOf,
+  AGY, CLAUDE, CODEX, LADDER, LIVE, MODELS, OVERFLOW, STATE, WORKERS, activitySvg, clip, fmtDur, fmtTok, idleBar, pct, shortModel, stateOf, timeline, toolKind, workerColor, workerOf,
 } from './data.js'
 
 const defined = (p) => Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined))
@@ -103,12 +103,12 @@ export function pane(E, m) {
   // Groups are separated by space, not lines: title + tabs, quota, notice, body.
   const kids = [
     spread(E, label(E, 'handoff'), dim(E, m.job ? `${m.job.id} · ${shortModel(m.job.meta.model)}` : '')),
-    row(E, [tab('live', 'LIVE', '1'), tab('jobs', 'JOBS', '2'), tab('bench', 'BENCH', '3')], { columnGap: 3 }),
+    row(E, [tab('live', 'LIVE', '1'), tab('jobs', 'JOBS', '2'), tab('bench', 'BENCH', '3'), tab('settings', 'SETTINGS', '4')], { columnGap: 3 }),
   ]
   if (m.quota) kids.push(T(E, ' '), ...quotaMeters(E, m.quota))
   if (m.notice) kids.push(T(E, ' '), T(E, m.notice, { color: 'yellow', wrap: 'wrap' }))
   kids.push(T(E, ' '))
-  const body = m.tab === 'jobs' ? jobsTab(E, m) : m.tab === 'bench' ? benchTab(E, m, w) : liveTab(E, m, w)
+  const body = m.tab === 'jobs' ? jobsTab(E, m) : m.tab === 'bench' ? benchTab(E, m, w) : m.tab === 'settings' ? settingsTab(E, m, w) : liveTab(E, m, w)
   return col(E, [...kids, ...body])
 }
 
@@ -311,12 +311,114 @@ function actions(E, m, st, running) {
     out.push(T(E, ' '), E.Input({ key: 'answer', label: `Answer ${m.worker || 'agy'}`, placeholder: `Type the answer; ${m.worker || 'agy'} resumes the same conversation`, value: '', submitLabel: 'send', onSubmit: m.actions.answer }))
   }
   const btns = []
-  if (running) btns.push(E.Button({ key: 'cancel', label: 'Cancel', hotkey: 'c', onPress: m.actions.cancel }))
+  const going = running || st.state === 'queued'
+  if (going) btns.push(E.Button({ key: 'cancel', label: 'Stop', hotkey: 'c', onPress: m.actions.cancel }))
+  btns.push(E.Button({ key: 'change-model', label: m.picking ? 'Keep model' : 'Change model', hotkey: 'm', plain: true, onPress: m.actions.togglePicker }))
   btns.push(E.Button({ key: 'expand', label: m.expanded ? 'Collapse' : 'Expand', hotkey: 'e', plain: true, onPress: m.actions.toggleExpand }))
   btns.push(E.Button({ key: 'older', label: '◀ Older', hotkey: 'o', plain: true, onPress: m.actions.older }))
   btns.push(E.Button({ key: 'newer', label: 'Newer ▶', hotkey: 'n', plain: true, onPress: m.actions.newer }))
   if (!m.following) btns.push(E.Button({ key: 'follow', label: 'Latest', hotkey: 'l', plain: true, onPress: m.actions.follow }))
-  out.push(T(E, ' '), row(E, btns, { columnGap: 3 }))
+  out.push(T(E, ' '), row(E, btns, { columnGap: 3, flexWrap: 'wrap' }))
+  if (m.picking) out.push(...modelPicker(E, m, going))
+  return out
+}
+
+// Change model: every model that routing may use (worker on, model on), grouped by
+// worker with this job's worker first. Picking one stops the job if it is still
+// going and runs the same task again on that model, as a new job.
+function modelPicker(E, m, going) {
+  const s = m.settings
+  const cur = m.job.meta.model
+  const order = [workerOf(m.job.meta), ...['agy', 'codex'].filter((w) => w !== workerOf(m.job.meta))]
+  const out = [T(E, ' '), section(E, going ? 'stop and restart on' : 'rerun this task on')]
+  let any = false
+  for (const wk of order) {
+    if (!s.workers[wk]) continue
+    const models = MODELS[wk].filter((id) => id !== cur && !s.disabled.has(id))
+    if (!models.length) continue
+    any = true
+    out.push(label(E, wk, workerColor(wk)))
+    for (const id of models) {
+      out.push(E.Button({
+        key: 'pick-' + id,
+        label: `${going ? 'Restart' : 'Rerun'} on ${shortModel(id)}`,
+        plain: true,
+        onPress: () => m.actions.rerunOn(id),
+        children: [
+          E.Text({ mono: true, children: [`  ${shortModel(id).padEnd(MODEL_W)}`] }),
+          E.Text({ mono: true, dimColor: true, children: [modelNote(wk, id)] }),
+        ],
+      }))
+    }
+  }
+  if (!any) out.push(...empty(E, 'No other model is turned on', 'Turn more on in the Settings tab (4).'))
+  const hidden = order.reduce((n, wk) => n + (s.workers[wk] ? MODELS[wk].filter((id) => s.disabled.has(id)).length : MODELS[wk].length), 0)
+  if (hidden) out.push(dim(E, `${hidden} model${hidden === 1 ? ' is' : 's are'} turned off in Settings (4) and not listed.`, { wrap: 'wrap' }))
+  out.push(dim(E, `Now on ${shortModel(cur)}. ${going ? 'The current run stops first; ' : ''}the rerun is a new job, and Claude reviews it.`, { wrap: 'wrap' }))
+  return out
+}
+
+const modelNote = (wk, id) => (OVERFLOW.has(id) ? 'overflow · own weekly pool' : `rung ${MODELS[wk].indexOf(id) + 1}${id === 'gemini-4-hydrogen-low' ? ' · lookups and digests' : ''}`)
+
+// A section heading with a note at the right end of its rule.
+const sectionNote = (E, text, note) => row(E, [keep(E, dim(E, `── ${text.toUpperCase()}`)), ruleFill(E), keep(E, dim(E, note))])
+
+// Settings: which workers and models routing may use, the default worker, the
+// usage cut-offs and auto-benchmarking. Each press runs `agent-handoff config`.
+function settingsTab(E, m, w) {
+  const s = m.settings
+  const a = m.actions
+  const out = [section(E, 'workers')]
+  for (const wk of ['agy', 'codex']) {
+    const on = s.workers[wk]
+    out.push(spread(E,
+      row(E, [fixed(E, 6, label(E, wk, workerColor(wk))), keep(E, chip(E, on ? 'ON' : 'OFF', on ? 'green' : 'gray')), dim(E, WORKERS[wk], { wrap: 'truncate' })]),
+      E.Button({ key: 'worker-' + wk, label: on ? 'Turn off' : 'Turn on', plain: true, onPress: () => a.toggleWorker(wk) })))
+  }
+  if (!s.workers.agy && !s.workers.codex) out.push(T(E, '! Both workers are off, so handoffs will fail until one is on.', { color: 'yellow', wrap: 'wrap' }))
+
+  out.push(T(E, ' '), section(E, 'default worker'))
+  out.push(row(E, ['auto', 'agy', 'codex'].map((b) => E.Button({
+    key: 'backend-' + b, label: `${s.backend === b ? '●' : '○'} ${b}`, plain: true, dimColor: s.backend !== b || undefined, onPress: () => a.setBackend(b),
+  })), { columnGap: 3 }))
+  out.push(dim(E, s.backend === 'auto'
+    ? 'Picks a worker for each task from usage left and pass rates.'
+    : `Every handoff goes to ${s.backend} unless Claude or a command names the other.`, { wrap: 'wrap' }))
+
+  for (const wk of ['agy', 'codex']) {
+    const list = MODELS[wk]
+    const onCount = list.filter((id) => !s.disabled.has(id)).length
+    const workerOff = !s.workers[wk]
+    out.push(T(E, ' '), sectionNote(E, `${wk} models`, workerOff ? 'worker off' : `${onCount} of ${list.length} on`))
+    for (const id of list) {
+      const on = !s.disabled.has(id)
+      out.push(E.Button({
+        key: 'model-' + id,
+        label: `${on ? 'Turn off' : 'Turn on'} ${shortModel(id)}`,
+        plain: true,
+        onPress: () => a.toggleModel(id),
+        children: [
+          E.Text({ mono: true, color: on && !workerOff ? 'green' : undefined, dimColor: !on || workerOff || undefined, children: [on ? '✓' : '·'] }),
+          E.Text({ mono: true, dimColor: !on || workerOff || undefined, strikethrough: !on || undefined, children: [shortModel(id).padEnd(MODEL_W)] }),
+          E.Text({ mono: true, dimColor: true, children: [modelNote(wk, id)] }),
+        ],
+      }))
+    }
+    if (!workerOff && !list.some((id) => !OVERFLOW.has(id) && !s.disabled.has(id))) out.push(T(E, `! Every ${wk} ladder model is off, so ${wk} won't be used.`, { color: 'yellow', wrap: 'wrap' }))
+  }
+
+  out.push(T(E, ' '), section(E, 'usage cut-offs'))
+  const limitRow = (which, text, value) => row(E, [
+    fixed(E, 30, T(E, text, { wrap: 'truncate' })),
+    E.Button({ key: which + '-down', label: '−', plain: true, onPress: () => a.stepLimit(which, -5) }),
+    fixed(E, 5, T(E, value ? `${Math.round(value * 100)}%`.padStart(4) : ' off', { weight: 'semibold', color: value ? undefined : 'gray' })),
+    E.Button({ key: which + '-up', label: '+', plain: true, onPress: () => a.stepLimit(which, 5) }),
+  ], { columnGap: 2 })
+  out.push(limitRow('low', 'Prefer the other worker below', s.limits.low))
+  out.push(limitRow('stop', 'Never use a worker below', s.limits.stop))
+  out.push(dim(E, 'Usage left in the tighter of the 5-hour and weekly windows (the meters at the top). Under the first, the other worker is picked if it has more. Under the second, a worker is not used at all.', { wrap: 'wrap' }))
+
+  out.push(T(E, ' '), ...autobenchSwitch(E, m))
   return out
 }
 

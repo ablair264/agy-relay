@@ -4,7 +4,7 @@
 //  - toasts and transcript log lines when the worker picks up, asks, finishes or stalls
 //  - auto-benchmarking: asks Claude to review and rate each finished handoff
 // It only reads ~/.agent-handoff (written by the agent-handoff CLI); buttons call the CLI.
-import { JOB_RE, LIVE, benchRows, clip, parseJsonl, safeJson, shortModel, stateOf, workerOf } from './data.js'
+import { JOB_RE, LIVE, benchRows, clip, parseJsonl, safeJson, settingsOf, shortModel, stateOf, workerOf } from './data.js'
 import { bands, pane } from './view.js'
 
 const PANE = 'agent-handoff'
@@ -29,6 +29,8 @@ let jobs = []
 let bench = null
 let quota = null
 let benchOn = true // config.json autobench; off = no reviews are expected
+let cfg = {} // config.json as the CLI wrote it (the Settings tab edits it through the CLI)
+let picking = false // the Change model list is open under the live job
 let verdicts = new Set()
 let notice = ''
 let noticeUntil = 0
@@ -77,7 +79,8 @@ async function refresh($, now) {
   }
   recent = list
   latest = list[list.length - 1] || null
-  const on = autobenchOf(await readJson($, `${home}/config.json`))
+  cfg = (await readJson($, `${home}/config.json`)) || {}
+  const on = autobenchOf(cfg)
   benchOn = on
   for (const j of recent) await announce($, j, on)
   if (!paneOpen) return
@@ -213,7 +216,8 @@ async function sendAnswer($, id, text) {
   const now = await $.clock.now()
   if (now - (lastAnswer.get(id) || 0) < 30e3) return
   const st = (await readJson($, file(id, 'status.json'))) || {}
-  const W = workerOf((await readJson($, file(id, 'meta.json'))) || {})
+  const jm = (await readJson($, file(id, 'meta.json'))) || {}
+  const W = workerOf(jm)
   if (st.state !== 'question') { await say($, `${W} isn't waiting on a question for ${id} (${stateOf(st.state).word}).`); return }
   lastAnswer.set(id, now)
   if (!(await loadRuntime($))) return
@@ -225,10 +229,58 @@ async function sendAnswer($, id, text) {
   }
   await say($, `Answer sent. ${W} resumes the same conversation.`)
   $.ui.log(`you answered ${W} (${id}): ${clip(text, 300)}`)
-  $.prompt.submit({
+  if (!jm.demo) tellClaude($, {
     text: `The user answered ${W}'s question on agent-handoff job ${id} from the handoff pane: "${text}". The relay has resumed that job in the same ${W} conversation, so do not answer it again. Follow it with \`agent-handoff status ${id}\` and review the result when it finishes.`,
-  }).catch(() => {})
+  })
   await redrawNow($)
+}
+
+// Claude needs to hear about what the user does in the pane, or it would answer,
+// restart or wait on a job that has moved on. Demo jobs stay quiet (screenshots).
+function tellClaude($, msg) {
+  $.prompt.submit(msg).catch(() => {})
+}
+
+// Stop: end the run (or drop it from the queue). Claude's waiting `run` exits as
+// cancelled, so say it was the user, or Claude might start it again.
+async function stopJob($, id) {
+  const jm = (await readJson($, file(id, 'meta.json'))) || {}
+  await runCli($, ['cancel', id], `Stopped ${id}.`)
+  if (!jm.demo) {
+    tellClaude($, { text: `The user stopped agent-handoff job ${id} (${workerOf(jm)}) from the handoff pane. Don't restart it unless they ask; if you were waiting on it, tell them it was stopped.` })
+  }
+}
+
+// Change model: stop the job if it is still going, then run the same task on the
+// model picked. The rerun is a new job, which the pane then follows.
+async function rerunOn($, id, model) {
+  picking = false
+  if (!(await loadRuntime($))) return
+  const jm = (await readJson($, file(id, 'meta.json'))) || {}
+  const st = (await readJson($, file(id, 'status.json'))) || {}
+  const wasRunning = LIVE.has(st.state) || st.state === 'queued'
+  try {
+    await $.process.run(['/bin/sh', '-c', 'nohup "$0" "$1" retry "$2" --model "$3" >/dev/null 2>&1 &', runtime.node, runtime.cli, id, model])
+  } catch (err) {
+    await say($, clip(String(err?.message || err), 200))
+    return
+  }
+  // This session started the rerun, so it reviews it.
+  const claims = (await $.store.get('claims')) || []
+  await $.store.set('claims', [...claims, { session: mySession, at: await $.clock.now() }].slice(-20))
+  selId = null
+  await say($, `${wasRunning ? 'Stopping and restarting' : 'Rerunning'} on ${shortModel(model)}…`)
+  $.ui.log(`you moved ${id} to ${model}`)
+  if (!jm.demo) {
+    tellClaude($, { text: `The user ${wasRunning ? 'stopped' : 'reran'} agent-handoff job ${id} from the handoff pane and restarted the same task on ${model}. The rerun is now the newest job: follow it with \`agent-handoff status\`, then review and rate it when it finishes. Don't start it again yourself.` })
+  }
+  await redrawNow($)
+}
+
+// Settings tab: every change goes through `agent-handoff config` so the CLI validates it.
+const pctOf = (x) => Math.round((x || 0) * 100)
+async function setting($, args, okText) {
+  await runCli($, ['config', ...args], okText)
 }
 
 // The switch lives in config.json; the CLI writes it so both stay in step.
@@ -257,7 +309,7 @@ export function register(on) {
         const now = await $.clock.now()
         await refresh($, now)
         await nudgeReview($, now)
-        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn])
+        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn, cfg])
         const live = recent.some((j) => LIVE.has(j.status.state))
         if (sig !== drawn || live || (notice && now > noticeUntil)) {
           drawn = sig
@@ -268,7 +320,7 @@ export function register(on) {
       }
     })
     try {
-      await $.command.register({ name: COMMAND, description: 'Watch Claude Code handoffs to agy or Codex: live job, jobs, bench; switch auto-benchmarking', argumentHint: '[live|jobs|bench|autobench on|off|<job id>]', immediate: true })
+      await $.command.register({ name: COMMAND, description: 'Watch Claude Code handoffs to agy or Codex: live jobs, history, bench and settings', argumentHint: '[live|jobs|bench|settings|autobench on|off|<job id>]', immediate: true })
     } catch { /* name taken */ }
     return next(e)
   })
@@ -281,7 +333,7 @@ export function register(on) {
       else await openPane($, 'bench')
       return { text: `Auto-benchmarking is ${benchOn ? 'on: Claude reviews and rates every finished handoff' : 'off: finished handoffs are not rated'}.` }
     }
-    if (arg === 'jobs' || arg === 'bench') await openPane($, arg)
+    if (arg === 'jobs' || arg === 'bench' || arg === 'settings') await openPane($, arg)
     else if (arg && arg !== 'live') {
       const hit = ids.filter((id) => id === arg || id.endsWith(arg) || id.startsWith(arg))
       if (hit.length !== 1) return { text: hit.length ? `More than one job matches ${arg}.` : `No agent-handoff job ${arg}.` }
@@ -335,6 +387,7 @@ export function register(on) {
     const pos = job ? ids.indexOf(job.id) : -1
     return pane(E, {
       tab, job, jobs, bench, quota, now, notice, expanded, cols: e.props?.bodyColumns,
+      settings: settingsOf(cfg), picking: picking && !!job,
       active: activeJobs(now),
       following: !selId,
       jobState: job ? effState(job.status, job.meta, now) : null,
@@ -343,14 +396,34 @@ export function register(on) {
       svgOk: e.surface === 'desktop' || e.surface === 'vscode',
       actions: {
         setTab: (t) => { tab = t; redrawNow($) },
-        select: (id) => { selId = id; tab = 'live'; redrawNow($) },
+        select: (id) => { selId = id; tab = 'live'; picking = false; redrawNow($) },
         older: () => { if (pos > 0) { selId = ids[pos - 1]; redrawNow($) } },
         newer: () => { if (pos >= 0 && pos < ids.length - 1) { selId = pos + 1 === ids.length - 1 ? null : ids[pos + 1]; redrawNow($) } },
         follow: () => { selId = null; redrawNow($) },
         toggleExpand: () => { expanded = !expanded; $.ui.invalidate('ui.render') },
         answer: (text) => sendAnswer($, job.id, text),
-        cancel: () => runCli($, ['cancel', job.id], `Cancel sent to ${job.id}.`),
+        cancel: () => stopJob($, job.id),
+        togglePicker: () => { picking = !picking; $.ui.invalidate('ui.render') },
+        rerunOn: (model) => rerunOn($, job.id, model),
         toggleAutobench: () => setAutobench($, benchOn ? 'off' : 'on'),
+        toggleWorker: (w) => {
+          const isOn = settingsOf(cfg).workers[w]
+          return setting($, ['worker', w, isOn ? 'off' : 'on'], `${w} ${isOn ? 'turned off: routing won’t use it' : 'turned on'}.`)
+        },
+        setBackend: (b) => setting($, ['backend', b], b === 'auto' ? 'Default worker: auto (picked per task).' : `Default worker: ${b}.`),
+        toggleModel: (m) => {
+          const isOn = !settingsOf(cfg).disabled.has(m)
+          return setting($, ['model', m, isOn ? 'off' : 'on'], `${shortModel(m)} ${isOn ? 'turned off: routing skips it' : 'turned on'}.`)
+        },
+        stepLimit: (which, delta) => {
+          const lim = settingsOf(cfg).limits
+          const max = which === 'low' ? 50 : Math.min(30, pctOf(lim.low))
+          const want = Math.max(0, Math.min(max, pctOf(lim[which]) + delta))
+          if (want === pctOf(lim[which])) return
+          return setting($, ['limit', which, String(want)], which === 'low'
+            ? `Prefer the other worker when one has under ${want}% left.`
+            : want ? `Never use a worker with under ${want}% left.` : 'No hard stop: a worker is used until it hits its limit.')
+        },
       },
     })
   })

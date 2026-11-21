@@ -39,7 +39,7 @@ test('codex: question, answer by resume, file change, gate and ledger', () => {
   assert.deepEqual(args1.slice(0, 3), ['exec', '-C', dir]);
   assert.ok(args1.includes('--json') && args1.includes('--output-schema'));
   assert.ok(args1.includes('sandbox_mode="workspace-write"'));
-  assert.ok(args1.includes('model_reasoning_effort="low"'), args1.join(' ')); // implement starts on gpt-6.1-sol:low
+  assert.ok(args1.includes('model_reasoning_effort="low"'), args1.join(' ')); // implement starts on gpt-6.2-sol:low
 
   const id = fs.readdirSync(path.join(HOME, 'jobs')).sort().pop();
   const r2 = cli(['answer', id, 'Spanish']);
@@ -79,7 +79,7 @@ test('auto-benchmarking off: fixed rung, no verdict asked, config round-trips', 
   assert.match(cli(['config', 'autobench', 'off']).stdout, /autobench off/);
   const rt = cli(['route', '--backend', 'codex', 'Review the diff in foo.mjs']);
   assert.match(rt.stdout, /auto-benchmarking off: fixed starting rung/);
-  assert.match(rt.stdout, /model: gpt-6.1-sol:high/); // review starts on rung 4
+  assert.match(rt.stdout, /model: gpt-6.2-sol:high/); // review starts on rung 4
   const dir = repo();
   fs.writeFileSync(path.join(dir, 'greet.mjs'), 'export const greet = (n) => n;\n');
   const r = cli(['run', '--backend', 'codex', '--write', '--dir', dir, 'Implement greet; ask first.']);
@@ -116,4 +116,73 @@ test('parsers: agy stream-json and codex limit time', async () => {
   const { backendOf } = await import('../lib/backends/index.mjs');
   assert.equal(backendOf('gpt-6.1-sol:high'), 'codex');
   assert.equal(backendOf('gemini-4-hydrogen-low'), 'agy');
+});
+
+test('routing respects workers, models and usage cut-offs from settings', () => {
+  const H = path.join(tmp, 'settings-home');
+  const e = { AGENT_HANDOFF_HOME: H };
+  // Search starts on rung 1 (luna low); with it off, the next enabled rung is used.
+  cli(['config', 'model', 'gpt-6-luna:low', 'off'], e);
+  const r1 = cli(['route', '--backend', 'codex', 'Look up the latest release notes'], e);
+  assert.match(r1.stdout, /model: gpt-6-luna:medium/, r1.stdout + r1.stderr);
+  assert.match(r1.stdout, /turned off in settings: gpt-6-luna:low/);
+  // A pinned model that is off is still used, with a note.
+  assert.match(cli(['route', '--model', 'gpt-6-luna:low', 'x'], e).stdout, /turned off in settings, used because you pinned it/);
+  // Never use a worker below the stop cut-off: codex at 8% left (FAKE_CODEX_USED 92).
+  cli(['config', 'limit', 'stop', '10'], e);
+  fs.rmSync(path.join(H, 'codex-quota.json'), { force: true }); // drop the cached usage from the calls above
+  const r2 = cli(['route', '--backend', 'codex', 'x'], { ...e, FAKE_CODEX_USED: '92,20' });
+  assert.equal(r2.status, 2);
+  assert.match(r2.stderr, /codex has 8% usage left, under your 10% cut-off/);
+  cli(['config', 'limit', 'stop', '0'], e);
+  // A worker switched off is refused, even when named.
+  cli(['config', 'worker', 'codex', 'off'], e);
+  const r3 = cli(['route', '--backend', 'codex', 'x'], e);
+  assert.equal(r3.status, 2);
+  assert.match(r3.stderr, /codex is turned off in settings/);
+  assert.match(cli(['route', 'x'], e).stderr, /no worker is available/);
+});
+
+test('retry reruns a job on another model and links it to the original', () => {
+  const dir = repo();
+  const r = cli(['run', '--backend', 'codex', '--dir', dir, 'Summarise greet.test.mjs; ask first.']);
+  assert.equal(r.status, 10, r.stdout + r.stderr);
+  const first = fs.readdirSync(path.join(HOME, 'jobs')).sort().pop();
+  const r2 = cli(['retry', first, '--model', 'gpt-6.2-sol:medium']);
+  assert.match(r2.stdout, new RegExp(`rerunning ${first} on gpt-6.2-sol:medium`));
+  // The rerun sorts after the original, even in the same minute: the pane follows the newest.
+  const second = fs.readdirSync(path.join(HOME, 'jobs')).sort().pop();
+  assert.notEqual(second, first);
+  const meta = JSON.parse(fs.readFileSync(path.join(HOME, 'jobs', second, 'meta.json'), 'utf8'));
+  assert.equal(meta.model, 'gpt-6.2-sol:medium');
+  assert.equal(meta.retry_of, first);
+  assert.match(fs.readFileSync(path.join(HOME, 'jobs', second, 'task.md'), 'utf8'), /TASK:\nSummarise greet\.test\.mjs; ask first\.$/);
+});
+
+test('demo writes sample jobs, refuses real data, and acts on pane requests', async () => {
+  const D = path.join(tmp, 'demo');
+  const e = { AGENT_HANDOFF_HOME: D };
+  const r = cli(['demo', '--once', '--dir', D], e);
+  assert.equal(r.status, 0, r.stderr);
+  const ids = fs.readdirSync(path.join(D, 'jobs')).sort();
+  assert.equal(ids.length, 9);
+  assert.ok(ids.every((id) => /^\d{8}-[a-z0-9]{4}$/.test(id)));
+  const states = ids.map((id) => JSON.parse(fs.readFileSync(path.join(D, 'jobs', id, 'status.json'), 'utf8')).state);
+  assert.deepEqual(states.slice(-3), ['question', 'working', 'starting']);
+  // The pane's buttons go through the CLI, which leaves requests for the demo.
+  assert.match(cli(['cancel', ids.at(-1)], e).stdout, /cancel sent to the demo/);
+  assert.ok(fs.existsSync(path.join(D, 'jobs', ids.at(-1), 'demo-request.json')));
+  // A folder with real jobs is refused.
+  assert.equal(cli(['demo', '--once', '--dir', HOME], e).status, 2);
+  // The scene acts on requests.
+  const { Scene } = await import('../lib/demo.mjs');
+  const scene = new Scene(path.join(tmp, 'demo2'));
+  fs.mkdirSync(scene.home, { recursive: true });
+  scene.reset();
+  const q = [...scene.jobs.values()].find((j) => j.st.state === 'question');
+  fs.writeFileSync(path.join(q.dir, 'demo-request.json'), JSON.stringify({ type: 'answer', text: 'Hide them' }));
+  scene.step(Date.now());
+  assert.equal(q.st.state, 'starting');
+  scene.step(Date.now() + 60e3);
+  assert.equal(q.st.state, 'done');
 });

@@ -11,6 +11,8 @@ if (argv[0] === 'login' && argv[1] === 'status') { console.log('Logged in using 
 if (argv[0] === 'debug' && argv[1] === 'models') {
   const lv = (e) => e.map((effort) => ({ effort }));
   console.log(JSON.stringify({ models: [
+    { slug: 'gpt-6.2-sol', display_name: 'GPT-6.2-Sol', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
+    { slug: 'gpt-6.2-astra', display_name: 'GPT-6.2-Astra', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
     { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
     { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
     { slug: 'gpt-6-luna', display_name: 'GPT-6-Luna', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium']) },
