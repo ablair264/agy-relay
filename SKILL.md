@@ -113,6 +113,7 @@ The mod reads `~/.agent-handoff` and shows:
 
 - **The `/handoff` pane**, which opens by itself when you run `agent-handoff run`. It has a handoff timeline (brief, pickup, each tool call, question, answer, gate, rating), what the worker is doing now, an idle bar against the stall limit, and an activity strip in the Desktop app. Tabs: Live, Jobs, Bench (with the auto-benchmark switch). It has a Cancel button, and an answer field when the worker asks. A finished, unrated job shows "Awaiting Claude's review" while auto-benchmarking is on.
 - **A band above the prompt** while a job runs or waits on a question, and toasts when the worker picks up, asks, finishes or stalls.
+- **Every active job at once.** When a codex job and an agy job run side by side (or another session has a job going), the band gives each its own row and the Live tab opens with an Active list showing each job's state and current step. Toasts and the auto-benchmark request cover every job, not just the newest.
 
 If the user answers the worker from the pane, the mod sends you a message saying so. The relay has already resumed the job, so don't `answer` it again. Follow it with `agent-handoff status <id>`, then check and rate the result when it finishes.
 

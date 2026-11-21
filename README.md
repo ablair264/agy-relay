@@ -9,6 +9,7 @@ Claude stays in charge. It writes the brief, picks the worker and model, answers
 - **Slash commands.** `/agent-handoff:codex-task` and `/agent-handoff:agy-task` send a task to a named worker. You can also just ask Claude to "hand this off" and it picks the worker itself.
 - **The `/handoff` pane.** It opens on its own when a handoff starts. It shows a timeline of the handoff (brief, pickup, each tool call, questions, answers, test result, rating), what the worker is doing now, and how long it has been quiet. It has three tabs: **Live**, **Jobs** and **Bench**.
 - **A band above the prompt** while a worker runs, and toasts when it picks up, asks a question, finishes or stalls.
+- **Several jobs at once.** A Codex job and an agy job can run side by side, and jobs started from other Claude Code sessions show up too. The band gives each one its own row, and the pane lists them all with live progress, so you don't have to switch between them.
 - **Answer from the pane.** When the worker asks a question, type the answer in the pane. The worker carries on in the same conversation and Claude is told.
 - **Automatic benchmarking.** When a handoff finishes, Claude reviews it and rates it pass, partial or fail without being asked. The ratings decide which model the next task of that kind gets. You can turn this off.
 - **A watchdog.** It stops a worker that stalls, loops on the same call, or runs past its time limit, and tells Claude what happened.
@@ -54,6 +55,8 @@ The `/handoff` pane opens and follows the job. Workers are **read-only by defaul
 | `/handoff jobs` | Recent jobs; select one to see its timeline |
 | `/handoff bench` | Pass rate, speed and token use per model and kind of task, plus the auto-benchmark switch |
 | `/handoff <job id>` | One job's timeline |
+
+When more than one job is active, the Live tab starts with an **Active** list: one row per job with its worker, state, model, what it's doing right now and how long it has been running. Jobs waiting on your answer stay listed for 30 minutes, and finished jobs for a minute. `▸` marks the job whose full timeline is shown below; select another row to switch. The band above the prompt shows the same jobs, one row each, and puts jobs with a question first when there isn't room for all of them.
 
 Pane keys: `c` cancels the running job, `e` expands full replies, `o`/`n` step to older or newer jobs, `l` goes back to following the latest job, and `a` (on the Bench tab) switches auto-benchmarking.
 

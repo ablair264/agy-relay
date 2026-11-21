@@ -5,7 +5,7 @@
 //  - auto-benchmarking: asks Claude to review and rate each finished handoff
 // It only reads ~/.agent-handoff (written by the agent-handoff CLI); buttons call the CLI.
 import { JOB_RE, LIVE, benchRows, clip, parseJsonl, safeJson, shortModel, stateOf, workerOf } from './data.js'
-import { band, pane } from './view.js'
+import { bands, pane } from './view.js'
 
 const PANE = 'agent-handoff'
 const HANDOFF_RE = /\bagent-handoff\s+(run|answer)\b/
@@ -21,7 +21,9 @@ let selId = null // null = follow the latest job
 let tab = 'live'
 let expanded = false // full worker replies and warnings in the timeline
 let paneOpen = false
-let latest = null // { id, meta, status }
+let latest = null // newest job: { id, meta, status, state }
+let recent = [] // the newest RECENT jobs, oldest first, same shape
+const RECENT = 8
 let job = null // { id, meta, status, events }
 let jobs = []
 let bench = null
@@ -51,32 +53,42 @@ function effState(st, meta, now) {
   return st.state
 }
 
-function showBand(now) {
-  if (!latest) return false
-  const st = latest.status
-  const state = effState(st, latest.meta, now)
-  if (LIVE.has(state)) return true
-  const since = st.finished ? now - Date.parse(st.finished) : Infinity
-  return (state === 'question' && since < 30 * 60e3) || since < 60e3
+// A job is "active" while it runs, waits in the queue or waits on an answer, and
+// for a minute after it ends, so a finish doesn't vanish before anyone sees it.
+function isActive(j, now) {
+  if (LIVE.has(j.state) || j.state === 'queued') return true
+  const since = j.status.finished ? now - Date.parse(j.status.finished) : Infinity
+  return (/^(question|blocked)$/.test(j.state) && since < 30 * 60e3) || since < 60e3
 }
+const activeJobs = (now) => recent.filter((j) => isActive(j, now))
 
 async function refresh($, now) {
   if (!home) return
   let entries = []
   try { entries = await $.fs.list(`${home}/jobs`) } catch { entries = [] }
   ids = entries.map((x) => x.name).filter((n) => JOB_RE.test(n)).sort()
-  const lid = ids[ids.length - 1]
-  latest = lid ? { id: lid, meta: (await readJson($, file(lid, 'meta.json'))) || {}, status: (await readJson($, file(lid, 'status.json'))) || {} } : null
-  if (latest) await announce($, now)
+  // Every recent job, not just the newest: a codex and an agy job can run side by side,
+  // and jobs from other sessions land here too.
+  const list = []
+  for (const id of ids.slice(-RECENT)) {
+    const meta = (await readJson($, file(id, 'meta.json'))) || {}
+    const status = (await readJson($, file(id, 'status.json'))) || {}
+    list.push({ id, meta, status, state: effState(status, meta, now) })
+  }
+  recent = list
+  latest = list[list.length - 1] || null
+  const on = autobenchOf(await readJson($, `${home}/config.json`))
+  benchOn = on
+  for (const j of recent) await announce($, j, on)
   if (!paneOpen) return
 
-  const id = selId && ids.includes(selId) ? selId : lid
+  const id = selId && ids.includes(selId) ? selId : latest?.id
   if (id) {
-    const same = latest && id === latest.id
+    const known = recent.find((j) => j.id === id)
     job = {
       id,
-      meta: same ? latest.meta : (await readJson($, file(id, 'meta.json'))) || {},
-      status: same ? latest.status : (await readJson($, file(id, 'status.json'))) || {},
+      meta: known ? known.meta : (await readJson($, file(id, 'meta.json'))) || {},
+      status: known ? known.status : (await readJson($, file(id, 'status.json'))) || {},
       events: parseJsonl(await readText($, file(id, 'events.jsonl'))),
     }
   } else job = null
@@ -96,28 +108,26 @@ async function refresh($, now) {
   const gq = (await readJson($, `${home}/quota.json`))?.quota
   const cq = (await readJson($, `${home}/codex-quota.json`))?.quota
   quota = gq || cq ? { ...(gq || {}), ...(cq ? { codex5h: cq.codex5h, codexWeek: cq.codexWeek } : {}) } : null
-  benchOn = autobenchOf(await readJson($, `${home}/config.json`))
 }
 
-// Toast and log when the latest job changes state. Nothing on the first look at startup.
-async function announce($, now) {
-  const st = effState(latest.status, latest.meta, now)
-  const prev = seen.get(latest.id)
-  seen.set(latest.id, st)
+// Toast and log when any recent job changes state. Nothing on the first look at startup.
+async function announce($, j, autobench) {
+  const st = j.state
+  const prev = seen.get(j.id)
+  seen.set(j.id, st)
   if (!primed || prev === st) return
-  const s = latest.status
-  const tag = `${latest.id} · ${shortModel(latest.meta.model)}`
-  const W = workerOf(latest.meta)
+  const s = j.status
+  const tag = `${j.id} · ${shortModel(j.meta.model)}`
+  const W = workerOf(j.meta)
   if (st === 'working') {
     $.ui.toast(`${W} picked up the task (${tag})`)
   } else if (st === 'question') {
     $.ui.toast(`${W} asks: ${clip(s.question, 140)}`)
     $.ui.log(`${W} asks (${tag}): ${clip(s.question, 300)}`)
   } else if (st === 'done') {
-    const on = autobenchOf(await readJson($, `${home}/config.json`))
-    $.ui.toast(on ? `${W} finished ${latest.id}; Claude reviews and rates it next` : `${W} finished ${latest.id}`)
+    $.ui.toast(autobench ? `${W} finished ${j.id}; Claude reviews and rates it next` : `${W} finished ${j.id}`)
     $.ui.log(`${W} done (${tag}): ${clip(s.summary, 300)}`)
-  } else if (st && st !== 'starting') {
+  } else if (st && st !== 'starting' && st !== 'queued') {
     $.ui.toast(`${W} ${stateOf(st).word} (${tag})`)
     $.ui.log(`${W} ${stateOf(st).word} (${tag})${s.summary ? `: ${clip(s.summary, 200)}` : ''}`)
   }
@@ -134,24 +144,29 @@ const REVIEW_AFTER_MS = 20e3
 const nudged = new Set()
 let mySession = null
 async function nudgeReview($, now) {
-  const st = latest?.status
-  if (!st || !/^(done|tests_failed)$/.test(st.state) || !st.finished || nudged.has(latest.id)) return
+  const due = recent.filter((j) => /^(done|tests_failed)$/.test(j.status.state) && j.status.finished && !nudged.has(j.id))
+  if (!due.length) return
   // Auto-benchmarking off: no verdicts are wanted, so never spend a Claude turn asking for one.
-  if (!autobenchOf(await readJson($, `${home}/config.json`))) { nudged.add(latest.id); return }
+  if (!benchOn) { for (const j of due) nudged.add(j.id); return }
+  for (const j of due) await nudgeOne($, j, now)
+}
+
+async function nudgeOne($, j, now) {
+  const st = j.status
   const age = now - Date.parse(st.finished)
   if (age < REVIEW_AFTER_MS || age > 24 * 3600e3) return
-  nudged.add(latest.id)
-  const created = Date.parse(latest.meta.created || st.started)
+  nudged.add(j.id)
+  const created = Date.parse(j.meta.created || st.started)
   const claims = (await $.store.get('claims')) || []
   const owner = claims.filter((c) => c.at <= created + 10e3 && c.at >= created - 10 * 60e3).sort((a, b) => b.at - a.at)[0]
   if (!owner || owner.session !== mySession) return
   const shared = (await $.store.get('nudged')) || []
-  if (shared.includes(latest.id)) return
-  await $.store.set('nudged', [...shared, latest.id].slice(-50))
+  if (shared.includes(j.id)) return
+  await $.store.set('nudged', [...shared, j.id].slice(-50))
   const ledger = await readText($, `${home}/ledger.jsonl`)
-  if (parseJsonl(ledger).some((r) => r.type === 'verdict' && r.id === latest.id)) return
+  if (parseJsonl(ledger).some((r) => r.type === 'verdict' && r.id === j.id)) return
   $.prompt.submit({
-    text: `Auto-benchmark: agent-handoff job ${latest.id} (${workerOf(latest.meta)}) finished (${st.state}) and has no rating yet. Review it with \`agent-handoff review ${latest.id}\`, then record \`agent-handoff verify ${latest.id} pass|partial|fail --note "<why>"\`. If you have already rated it, ignore this.`,
+    text: `Auto-benchmark: agent-handoff job ${j.id} (${workerOf(j.meta)}) finished (${st.state}) and has no rating yet. Review it with \`agent-handoff review ${j.id}\`, then record \`agent-handoff verify ${j.id} pass|partial|fail --note "<why>"\`. If you have already rated it, ignore this.`,
   }).catch(() => {})
 }
 
@@ -242,8 +257,8 @@ export function register(on) {
         const now = await $.clock.now()
         await refresh($, now)
         await nudgeReview($, now)
-        const sig = JSON.stringify([latest?.id, latest?.status?.state, latest?.status?.last_event_at, job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn])
-        const live = latest && LIVE.has(latest.status.state)
+        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn])
+        const live = recent.some((j) => LIVE.has(j.status.state))
         if (sig !== drawn || live || (notice && now > noticeUntil)) {
           drawn = sig
           $.ui.invalidate('ui.render')
@@ -303,9 +318,11 @@ export function register(on) {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const now = await $.clock.now()
-    if (!showBand(now)) return next(e)
+    const act = activeJobs(now)
+    if (!act.length) return next(e)
     const E = $.ui.resolve(e)
-    const mine = band(E, { latest, latestState: effState(latest.status, latest.meta, now), now, actions: { open: () => openPane($, 'live', null) } })
+    // One row per active job; Open follows the newest job, or pins the one clicked.
+    const mine = bands(E, { jobs: act, now, maxRows: e.props?.maxRows, open: (id) => openPane($, 'live', id === latest?.id ? null : id) })
     const theirs = await next(e)
     return theirs ? E.Box({ flexDirection: 'column', children: [mine, theirs] }) : mine
   })
@@ -318,6 +335,7 @@ export function register(on) {
     const pos = job ? ids.indexOf(job.id) : -1
     return pane(E, {
       tab, job, jobs, bench, quota, now, notice, expanded, cols: e.props?.bodyColumns,
+      active: activeJobs(now),
       following: !selId,
       jobState: job ? effState(job.status, job.meta, now) : null,
       verdict: job ? verdicts.has(job.id) : false,

@@ -35,7 +35,9 @@ function fixture(on: any, status: any, store: Record<string, unknown> = {}, meta
   mock.env(on, { HOME: '/fake' })
   mock.store(on, store)
   on('session.id', () => ({ value: 'me' }))
-  on('fs.list', ($: any, e: any) => ({ value: e.path.endsWith('/jobs') ? [{ name: ID, kind: 'directory', size: 0, isLink: false }] : [] }))
+  // Lists every job the fixture holds, so a test can add a second one.
+  const jobIds = () => [...new Set(Object.keys(files).map((f) => f.match(/\/jobs\/([^/]+)\//)?.[1]).filter(Boolean))]
+  on('fs.list', ($: any, e: any) => ({ value: e.path.endsWith('/jobs') ? jobIds().map((name) => ({ name, kind: 'directory', size: 0, isLink: false })) : [] }))
   on('fs.read', ($: any, e: any) => (e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' }))
   on('command.register', () => ({ value: undefined }))
   on('session.start', () => ({ cwd: '/work' }))
@@ -289,4 +291,100 @@ test('/handoff autobench off turns it off from the prompt', async ($, on) => {
   const r: any = await $.command.run({ command: 'handoff', args: 'autobench off' })
   expect(runs[0].slice(-3)).toEqual(['config', 'autobench', 'off'])
   expect(r.text).toMatch(/^Auto-benchmarking is off/)
+})
+
+// Two jobs at once: the agy job (ID) asking a question, and a newer codex job (ID2) working.
+const ID2 = '11120043-x7k2'
+function twoJobs(on: any, codexStatus: any = { ...workingStatus, id: ID2 }, store: Record<string, unknown> = {}) {
+  const files = fixture(on, questionStatus, store)
+  files[`${HOME}/jobs/${ID2}/meta.json`] = JSON.stringify({ ...meta, id: ID2, backend: 'codex', model: 'gpt-6.1-sol:low', stall_s: 480, task: 'Write tests for parser.ts', created: at(0) })
+  files[`${HOME}/jobs/${ID2}/status.json`] = JSON.stringify(codexStatus)
+  files[`${HOME}/jobs/${ID2}/events.jsonl`] = ''
+  return files
+}
+
+test('the band shows a row for each job running at once', async ($, on) => {
+  mock.clock(on, { now: T0 + 40e3 })
+  twoJobs(on)
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const band = await $.ui.mount({
+    plugin: 'agent-handoff', component: 'AbovePrompt', surface: 'terminal', viewport: { columns: 160, rows: 50 },
+    props: { hasSurvey: false, isWorking: true, maxRows: 4, bodyColumns: 120, scroll: { offset: 0, bodyRows: 4 }, view: {} },
+  } as any)
+  expect(await band.find({ type: 'Text', text: /^Sol 6\.1 low · read_file greet\.mjs$/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /^Hydrogen high · Which language/ })).toBeDefined()
+  expect(await band.find({ key: `band-open-${ID}` })).toMatchObject({ props: { label: 'Answer' } })
+  expect(await band.find({ key: `band-open-${ID2}` })).toMatchObject({ props: { label: 'Open' } })
+  await band.unmount()
+})
+
+test('with more jobs than band rows, questions keep their row and the rest are counted', async ($, on) => {
+  mock.clock(on, { now: T0 + 40e3 })
+  twoJobs(on)
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const band = await $.ui.mount({
+    plugin: 'agent-handoff', component: 'AbovePrompt', surface: 'terminal', viewport: { columns: 160, rows: 50 },
+    props: { hasSurvey: false, isWorking: true, maxRows: 1, bodyColumns: 120, scroll: { offset: 0, bodyRows: 1 }, view: {} },
+  } as any)
+  expect(await band.find({ key: `band-open-${ID}` })).toBeDefined()
+  expect(await band.find({ key: `band-open-${ID2}` })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: '+1 more' })).toBeDefined()
+  await band.unmount()
+})
+
+test('the pane lists every active job above the timeline and switches on select', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  twoJobs(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '── ACTIVE · 2' })).toBeDefined()
+  expect(await ui.find({ key: `active-${ID}` })).toBeDefined()
+  expect(await ui.find({ key: `active-${ID2}` })).toBeDefined()
+  // Following the newest job (the codex one): its timeline is shown, marked ▸.
+  expect(await ui.find({ type: 'Text', text: /^Write tests for parser\.ts$/ })).toBeDefined()
+  await ui.press({ key: `active-${ID}` })
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: /^asks: Which language should the greeting use\?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '── ACTIVE · 2' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('one job alone shows no active list', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  fixture(on, workingStatus)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /ACTIVE/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an older job finishing while a newer one runs still gets its toast and review request', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  // Both jobs working; the older one (ID, agy) finishes, so it is not the newest job.
+  const files = twoJobs(on, { ...workingStatus, id: ID2 }, { claims: [{ session: 'me', at: T0 - 2000 }] })
+  files[`${HOME}/jobs/${ID}/status.json`] = JSON.stringify(workingStatus)
+  const toasts: string[] = []
+  const submitted: string[] = []
+  on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+  on('ui.log', () => ({ value: undefined }))
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  files[`${HOME}/jobs/${ID}/status.json`] = JSON.stringify({ ...workingStatus, state: 'done', active: undefined, finished: at(41), summary: 'Greeting added.' })
+  await clock.advance(1000)
+  expect(toasts).toEqual([`agy finished ${ID}; Claude reviews and rates it next`])
+  await clock.advance(25e3)
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain(`agent-handoff review ${ID}`)
 })

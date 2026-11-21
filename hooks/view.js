@@ -48,26 +48,53 @@ function idleOf(st, meta, now) {
   return { idle, limit }
 }
 
-export function band(E, m) {
-  const { latest, now } = m
-  const st = latest.status, meta = latest.meta
-  const s = stateOf(m.latestState)
-  let doing = ''
-  if (LIVE.has(st.state)) doing = st.active ? `${st.active.tool} ${st.active.arg || ''}` : 'thinking'
-  else if (st.state === 'question') doing = st.question || ''
-  else doing = st.summary || ''
-  // Three zones: who + state | model · what it is doing | idle + action.
+// What a job is doing, in a few words, for the band and the Active list.
+function doingOf(st) {
+  if (LIVE.has(st.state)) return st.active ? `${st.active.tool} ${st.active.arg || ''}` : st.state === 'starting' ? 'starting up' : 'thinking'
+  if (st.state === 'queued') return `queued behind ${st.queued_behind || 'another job'}`
+  if (st.state === 'question') return st.question || ''
+  return st.summary || ''
+}
+
+// Which jobs earn a row when there are more than fit: questions first, then running,
+// queued and finished. Shown in start order so rows don't jump around.
+const URGENCY = (s) => (/^(question|blocked)$/.test(s) ? 0 : LIVE.has(s) ? 1 : s === 'queued' ? 2 : 3)
+function pick(jobs, n) {
+  if (jobs.length <= n) return jobs
+  const keep = new Set([...jobs].sort((a, b) => URGENCY(a.state) - URGENCY(b.state)).slice(0, n).map((j) => j.id))
+  return jobs.filter((j) => keep.has(j.id))
+}
+
+// One band row: who + state | model · what it is doing | idle + action.
+function bandRow(E, j, now, open, key, more) {
+  const st = j.status, meta = j.meta
+  const s = stateOf(j.state)
   const W = workerOf(meta)
   const kids = [
-    keep(E, row(E, [label(E, W, workerColor(W)), T(E, `${s.glyph} ${s.word}`, { color: s.color })])),
-    grow(E, [T(E, `${shortModel(meta.model)} · ${doing.replace(/\s+/g, ' ')}`, { wrap: 'truncate' })]),
+    keep(E, row(E, [fixed(E, 5, label(E, W, workerColor(W))), fixed(E, STATE_W, T(E, `${s.glyph} ${s.word}`, { color: s.color }))])),
+    grow(E, [T(E, `${shortModel(meta.model)} · ${doingOf(st).replace(/\s+/g, ' ')}`, { wrap: 'truncate' })]),
   ]
   if (LIVE.has(st.state)) {
     const { idle, limit } = idleOf(st, meta, now)
     kids.push(keep(E, T(E, `${fmtDur(idle)}/${fmtDur(limit)}`, { color: idleBar(idle, limit).color, dimColor: idle / limit < 0.5 || undefined })))
   }
-  kids.push(E.Button({ key: 'band-open', label: st.state === 'question' ? 'Answer' : 'Open', plain: true, onPress: m.actions.open }))
+  kids.push(E.Button({ key, label: st.state === 'question' ? 'Answer' : 'Open', plain: true, onPress: open }))
+  if (more) kids.push(keep(E, dim(E, `+${more} more`)))
   return row(E, kids, { columnGap: 2 })
+}
+
+// The band above the prompt: a row for every active job (a codex and an agy job can
+// run at once, plus jobs from other sessions), up to the rows the band is given.
+export function bands(E, m) {
+  const { jobs, now } = m
+  if (jobs.length === 1) return bandRow(E, jobs[0], now, () => m.open(jobs[0].id), 'band-open')
+  const max = Math.max(1, Math.min(4, m.maxRows || 3))
+  // A one-row band shows the most urgent job and counts the rest on the same line.
+  if (max === 1) { const [j] = pick(jobs, 1); return bandRow(E, j, now, () => m.open(j.id), `band-open-${j.id}`, jobs.length - 1) }
+  const shown = pick(jobs, jobs.length > max ? max - 1 : max)
+  const rows = shown.map((j) => bandRow(E, j, now, () => m.open(j.id), `band-open-${j.id}`))
+  if (shown.length < jobs.length) rows.push(dim(E, `+${jobs.length - shown.length} more · /handoff shows them all`))
+  return col(E, rows)
 }
 
 export function pane(E, m) {
@@ -108,6 +135,7 @@ function liveTab(E, m0, w) {
   const edits = tools.filter((ev) => ev.state !== 'error' && /write|replace|edit|sed_file/.test(ev.tool || '')).length
   const gate = [...j.events].reverse().find((ev) => ev.type === 'gate')
   const out = [
+    ...activeList(E, m, w),
     spread(E, row(E, [chip(E, s.word.toUpperCase(), s.color), T(E, clip(meta.task, 200), { weight: 'semibold', wrap: 'truncate' })]),
       T(E, `${running ? 'ELAPSED' : 'TOOK'} ${fmtDur(dur)}`, { color: s.color, weight: 'semibold' })),
   ]
@@ -139,6 +167,38 @@ function liveTab(E, m0, w) {
   out.push(...review(E, items, st, running, m))
   out.push(...actions(E, m, st, running))
   return out
+}
+
+// Every active job at a glance, above the timeline, whenever more than one is going
+// (or one is going while you look at another). ▸ marks the job whose timeline is
+// below; select a row to show that one instead.
+function activeList(E, m, w) {
+  const act = m.active || []
+  if (!act.some((a) => a.id !== m.job?.id)) return []
+  const doingW = Math.max(8, w - 2 - STATE_W - 6 - MODEL_W - 9 - 4)
+  const rows = act.map((a) => {
+    const s = stateOf(a.state)
+    const W = workerOf(a.meta)
+    const st = a.status
+    const shown = a.id === m.job?.id
+    const right = LIVE.has(a.state) && st.started ? fmtDur((m.now - Date.parse(st.started)) / 1000)
+      : a.state === 'queued' ? `#${st.position || 1}` : a.state === 'question' ? 'waiting' : ''
+    return E.Button({
+      key: 'active-' + a.id,
+      label: `${W} ${s.word}: ${clip(a.meta.task, 60)}`,
+      plain: true,
+      onPress: () => m.actions.select(a.id),
+      children: [
+        E.Text({ mono: true, weight: shown ? 'semibold' : undefined, children: [shown ? '▸' : ' '] }),
+        E.Text({ mono: true, color: s.color, children: [`${s.glyph} ${s.word}`.padEnd(STATE_W)] }),
+        E.Text({ mono: true, color: workerColor(W), weight: 'semibold', children: [W.padEnd(6)] }),
+        E.Text({ mono: true, dimColor: true, children: [shortModel(a.meta.model).padEnd(MODEL_W)] }),
+        E.Text({ mono: true, children: [clip(doingOf(st), doingW).padEnd(doingW)] }),
+        E.Text({ mono: true, dimColor: true, children: [right.padStart(8)] }),
+      ],
+    })
+  })
+  return [section(E, `active · ${act.length}`), ...rows, T(E, ' ')]
 }
 
 // One line per event: dim time | actor (in its colour) | what happened.
