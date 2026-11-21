@@ -83,6 +83,17 @@ The **Settings** tab (`/handoff settings` or `4`) changes how work is routed. Ev
 | **Usage cut-offs** | *Prefer the other worker below* (default 20%): when a worker has less usage left than this and the other has more, the other one gets the task. *Never use a worker below* (default off): a worker under this is not used at all, and Claude tells you why. |
 | **Auto-benchmark** | The same switch as on the Bench tab. |
 
+**Prices and scores (optional).** With a free [BenchLM](https://benchlm.ai/data/access) key, the Settings tab shows each model's price per million tokens and its BenchLM coding and agentic scores in a small table, NEW models show their figures, and Ask Claude passes them along:
+
+```sh
+agent-handoff config benchlm-key <your key>   # saved in ~/.agent-handoff/benchlm-key, readable only by you
+agent-handoff stats                           # the table in a terminal; --refresh fetches now
+```
+
+Run the first command yourself in a terminal rather than asking Claude, so the key doesn't end up in a chat. The data is fetched with your key, cached on your machine and refreshed weekly in the background. Each refresh uses 3 of the free plan's 1,000 monthly reads. BenchLM scores whole models, so every effort level of a model shows the same scores.
+
+BenchLM's data is licensed [CC BY-NC 4.0](https://benchlm.ai/terms#data-access): free for non-commercial use with credit, which the pane and `stats` show ("Data from BenchLM.ai"). This plugin doesn't include or redistribute any BenchLM data. If you use it commercially, check BenchLM's terms for your use.
+
 **New models.** When Codex or agy starts offering a model family that isn't on its ladder (for example a new Sol release), you get a toast once, the Settings tab shows a dot, and the model appears under that worker with a **NEW** tag and two buttons:
 
 - **Ask Claude**: Claude compares it with the current ladder on price and coding benchmarks and suggests where it fits. Nothing changes until you agree. Claude then saves your own ladder with `agent-handoff config ladder <worker> <id> <id> …`, which overrides the built-in one (Settings shows "your ladder" and a button to go back to the built-in one).
@@ -109,7 +120,7 @@ Auto-benchmarking is **on** by default. With it on:
 3. Claude rates it **pass** (right and usable as is), **partial** (worked, but Claude had to fix or finish it) or **fail** (wrong, unusable, or it gamed the tests), with a short reason.
 4. The rating is saved in a local ledger. The next task of the same kind starts on the cheapest model that keeps passing. A model that drops below 70% is replaced by a stronger one, and a cheaper one gets a try now and then.
 
-If Claude wasn't watching when a job finished (for example, you answered the worker from the pane), the plugin asks Claude to rate it 20 seconds after it finishes. Jobs are only ever rated by the session that started them.
+If a job finishes while Claude isn't handling it (for example, you answered the worker from the pane and Claude was idle), the plugin asks Claude to rate it. It asks only when there's still no rating, Claude hasn't looked at the job (`review`, `status` and so on), and the session has had no tool activity for 20 seconds, so it never interrupts Claude mid-review. Jobs are only ever rated by the session that started them.
 
 Each rating costs a short Claude turn. Turn auto-benchmarking off if you'd rather not spend those:
 
@@ -170,6 +181,7 @@ agent-handoff review          # task, summary, diff and test result in one place
 agent-handoff bench           # pass rates per kind of task and model
 agent-handoff quota           # usage left on each worker
 agent-handoff retry <id> --model gpt-6.2-sol:medium   # stop (if running) and rerun on another model
+agent-handoff stats           # price and BenchLM scores per model (needs your BenchLM key)
 agent-handoff config backend auto|agy|codex
 agent-handoff doctor          # check node, workers, sign-in, PATH and the pane
 ```

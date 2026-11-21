@@ -39,6 +39,22 @@ export function familyName(f = '') {
   return f
 }
 
+// BenchLM (benchlm.ai) rates models, not efforts: our family with dots as dashes is
+// its model key (gpt-6.2-sol -> gpt-6-2-sol; gemini-4-neon stays). The CLI caches
+// the user's own fetch in benchlm.json.
+export const benchKeyOf = (family) => String(family || '').replace(/\./g, '-')
+export const benchFor = (bench, idOrFamily) => bench?.models?.[benchKeyOf(familyOf(idOrFamily))] || null
+// $2/$10 (input/output per 1M tokens), compact: $0.1/$0.5, $1.5/$7.5
+const money = (n) => (n === null || n === undefined ? '?' : `$${Number(n) >= 10 ? Math.round(n) : Number(n).toString()}`)
+export const priceText = (b) => (b?.price ? `${money(b.price.input)}/${money(b.price.output)}` : '')
+export const scoreText = (s) => (s?.score === null || s?.score === undefined ? '' : String(Math.round(s.score)))
+// "$1/$5 per 1M input/output tokens, coding 80 (#12), agentic 82.2 (#10)" for Claude's prompt
+export function benchLine(b) {
+  if (!b) return ''
+  const part = (label, s) => (s?.score !== null && s?.score !== undefined ? `${label} ${s.score}${s.rank ? ` (#${s.rank})` : ''}` : null)
+  return [b.price ? `${priceText(b)} per 1M input/output tokens` : null, part('coding', b.coding), part('agentic', b.agentic), part('overall', b.overall)].filter(Boolean).join(', ')
+}
+
 // The models a worker's ladder uses (the user's own ladder if they set one), then overflow.
 export const modelsFor = (s, wk) => [...(s.ladders?.[wk] || LADDERS[wk]), ...(wk === 'agy' ? [...OVERFLOW] : [])]
 

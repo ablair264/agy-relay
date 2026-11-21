@@ -96,7 +96,7 @@ agent-handoff verify <id> pass|partial|fail --note "<why, in a few words>"
 
 Always add `--note` (what was wrong, what you fixed). Rate the worker's output, not the end result: fix any problem yourself after rating.
 
-If a finished job still has no rating 20 seconds after it ends (for example, the user answered the worker from the pane, so no turn of yours was watching), the mod sends you one "Auto-benchmark:" message asking for it. Only the session that started the job gets it. If you have already rated the job, ignore it.
+If a finished job is left unrated while you aren't handling it (for example, the user answered the worker from the pane while you were idle), the mod sends you one "Auto-benchmark:" message asking for it. It only does so when you haven't run `review`, `status`, `verify` or similar on that job and the session has had no tool calls for 20 seconds, so it won't arrive while you are reviewing. Only the session that started the job gets it. If you have already rated the job, ignore it.
 
 With it **off**, skip `verify`: routing uses fixed starting rungs, nothing explores, and the mod never asks. Still review any result you rely on; that is correctness, not benchmarking. Runs are still logged, so the ledger has data if it is turned back on.
 
@@ -125,6 +125,15 @@ The user can also act from the pane, and the mod sends you a message each time:
 - **Asked where a new model fits** (a message starting "agent-handoff: codex now offers …"). Research the model against the current ladder (`agent-handoff config` shows it): price and agentic-coding benchmarks such as Terminal-Bench. Propose a ladder (cheapest first, one model per rung; codex ids are `model:effort`) and wait for the user to agree. Then save it with `agent-handoff config ladder <worker> <id> <id> …`; `agent-handoff config ladder <worker> default` goes back to the built-in one.
 
 To rerun a job yourself, for example when the user asks for a stronger model, use `agent-handoff retry <id> --model <id>` (or `--backend codex|agy`). It stops the job if it is still running and reruns the same task, directory, write mode and gate.
+
+## Prices and benchmark scores
+
+```sh
+agent-handoff stats              # per model: price per 1M tokens, BenchLM coding / agentic / overall score and rank
+agent-handoff stats --refresh    # fetch now (3 reads of the user's free BenchLM key; otherwise cached 7 days)
+```
+
+The data comes from BenchLM with the user's own key. If there is none, `stats` says how to get one: tell the user to create a free key at https://benchlm.ai/data/access and run `agent-handoff config benchlm-key <key>` **themselves** in a terminal. Never ask them to paste the key into the chat, and never print or copy the key file. Scores are per model, shared by every effort level. Use them when comparing a new model with the ladder, and credit "Data from BenchLM.ai" when you quote the numbers to the user.
 
 ## The worker's thinking
 

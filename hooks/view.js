@@ -3,7 +3,7 @@
 // Style: monospace throughout, small uppercase section labels, straight rules,
 // no bordered boxes. Every Text is mono so padded columns line up in Desktop too.
 import {
-  AGY, CLAUDE, CODEX, LADDER, LIVE, MODELS, OVERFLOW, STATE, WORKERS, activitySvg, familyName, modelsFor, thoughtParts, clip, fmtDur, fmtTok, idleBar, pct, shortModel, stateOf, timeline, toolKind, workerColor, workerOf,
+  AGY, CLAUDE, CODEX, LADDER, LIVE, MODELS, OVERFLOW, STATE, WORKERS, activitySvg, benchFor, familyName, modelsFor, priceText, scoreText, thoughtParts, clip, fmtDur, fmtTok, idleBar, pct, shortModel, stateOf, timeline, toolKind, workerColor, workerOf,
 } from './data.js'
 
 const defined = (p) => Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined))
@@ -393,6 +393,7 @@ function modelPicker(E, m, going) {
   return out
 }
 
+const RUNG_W = 10, PRICE_W = 13
 const modelNote = (s, wk, id) => (OVERFLOW.has(id) ? 'overflow · own weekly pool' : `rung ${modelsFor(s, wk).indexOf(id) + 1}${id === 'gemini-4-hydrogen-low' ? ' · lookups and digests' : ''}`)
 
 // A section heading with a note at the right end of its rule.
@@ -426,24 +427,35 @@ function settingsTab(E, m, w) {
     const workerOff = !s.workers[wk]
     const own = !!s.ladders?.[wk]
     out.push(T(E, ' '), sectionNote(E, `${wk} models`, workerOff ? 'worker off' : `${own ? 'your ladder · ' : ''}${onCount} of ${list.length} on`))
+    // With BenchLM data: a small table, price and scores in fixed columns.
+    const bl = m.benchlm
+    if (bl) out.push(dim(E, `  ${''.padEnd(MODEL_W)} ${'rung'.padEnd(RUNG_W)}${'$/1M in/out'.padEnd(PRICE_W)}${'coding'.padStart(6)}${'agentic'.padStart(8)}`))
     for (const id of list) {
       const on = !s.disabled.has(id)
+      const b = bl && benchFor(bl, id)
+      const off = !on || workerOff || undefined
       out.push(E.Button({
         key: 'model-' + id,
         label: `${on ? 'Turn off' : 'Turn on'} ${shortModel(id)}`,
         plain: true,
         onPress: () => a.toggleModel(id),
-        children: [
-          E.Text({ mono: true, color: on && !workerOff ? 'green' : undefined, dimColor: !on || workerOff || undefined, children: [on ? '✓' : '·'] }),
-          E.Text({ mono: true, dimColor: !on || workerOff || undefined, strikethrough: !on || undefined, children: [shortModel(id).padEnd(MODEL_W)] }),
+        children: bl ? [
+          E.Text({ mono: true, color: on && !workerOff ? 'green' : undefined, dimColor: off, children: [on ? '✓' : '·'] }),
+          E.Text({ mono: true, dimColor: off, strikethrough: !on || undefined, children: [shortModel(id).padEnd(MODEL_W)] }),
+          E.Text({ mono: true, dimColor: true, children: [(OVERFLOW.has(id) ? 'overflow' : `${list.indexOf(id) + 1}`).padEnd(RUNG_W) + (priceText(b) || '–').padEnd(PRICE_W) + (scoreText(b?.coding) || '–').padStart(6) + (scoreText(b?.agentic) || '–').padStart(8)] }),
+        ] : [
+          E.Text({ mono: true, color: on && !workerOff ? 'green' : undefined, dimColor: off, children: [on ? '✓' : '·'] }),
+          E.Text({ mono: true, dimColor: off, strikethrough: !on || undefined, children: [shortModel(id).padEnd(MODEL_W)] }),
           E.Text({ mono: true, dimColor: true, children: [modelNote(s, wk, id)] }),
         ],
       }))
     }
     // Models this worker offers that no ladder knows yet.
     for (const n of (m.newModels || []).filter((x) => x.worker === wk)) {
+      const nb = m.benchlm && benchFor(m.benchlm, n.family)
+      const figures = nb ? [priceText(nb), nb.coding ? `coding ${scoreText(nb.coding)}` : '', nb.agentic ? `agentic ${scoreText(nb.agentic)}` : ''].filter(Boolean).join(' · ') : n.efforts.join(' · ')
       out.push(spread(E,
-        row(E, [keep(E, chip(E, 'NEW', 'cyan')), keep(E, T(E, familyName(n.family), { weight: 'semibold' })), dim(E, n.efforts.join(' · '), { wrap: 'truncate' })]),
+        row(E, [keep(E, chip(E, 'NEW', 'cyan')), keep(E, T(E, familyName(n.family), { weight: 'semibold' })), dim(E, figures, { wrap: 'truncate' })]),
         row(E, [
           E.Button({ key: 'ask-' + n.family, label: 'Ask Claude', plain: true, onPress: () => a.askModel(n) }),
           E.Button({ key: 'dismiss-' + n.family, label: 'Dismiss', plain: true, dimColor: true, onPress: () => a.dismissModel(n) }),
@@ -466,6 +478,10 @@ function settingsTab(E, m, w) {
   out.push(dim(E, 'Usage left in the tighter of the 5-hour and weekly windows (the meters at the top). Under the first, the other worker is picked if it has more. Under the second, a worker is not used at all.', { wrap: 'wrap' }))
 
   out.push(T(E, ' '), ...autobenchSwitch(E, m))
+  // BenchLM's licence asks for this credit wherever its numbers appear.
+  out.push(T(E, ' '), m.benchlm
+    ? dim(E, `Prices and scores: Data from BenchLM.ai (benchlm.ai), as of ${m.benchlm.dataAsOf || 'unknown'}. Scores are per model, shared by every effort.`, { wrap: 'wrap' })
+    : dim(E, 'Add prices and coding scores to this list: get a free key at benchlm.ai/data/access, then run agent-handoff config benchlm-key <key>.', { wrap: 'wrap' }))
   return out
 }
 

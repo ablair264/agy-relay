@@ -579,3 +579,80 @@ test('a model a worker offers but no ladder knows is flagged once, with Ask Clau
   expect(toasts.length).toBe(1)
   await ui.unmount()
 })
+
+test('with BenchLM data, settings shows price and scores per model and passes them to Claude', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  // Made-up figures in BenchLM's shape.
+  files[`${HOME}/benchlm.json`] = JSON.stringify({ at: T0, dataAsOf: '2026-01-02', attribution: 'Data from BenchLM.ai', models: {
+    'gpt-6-2-sol': { name: 'GPT-6.2 Sol', price: { input: 2, output: 10 }, coding: { score: 51.2, rank: 4 }, agentic: { score: 52.6, rank: 4 } },
+    'gpt-6-3-sol': { name: 'GPT-6.3 Sol', price: { input: 1, output: 5 }, coding: { score: 58, rank: 3 }, agentic: { score: 57, rank: 3 } },
+  } })
+  files[`${HOME}/codex-models.json`] = JSON.stringify({ models: [{ id: 'gpt-6.3-sol:low' }] })
+  const submitted: string[] = []
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: 'settings' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^ +rung +\$\/1M in\/out +coding +agentic$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^3 +\$2\/\$10 +51 +53$/ })).toBeDefined() // Sol 6.2 low, rung 3
+  expect(await ui.find({ type: 'Text', text: /^1 +– +– +–$/ })).toBeDefined() // Luna: no data
+  expect(await ui.find({ type: 'Text', text: '$1/$5 · coding 58 · agentic 57' })).toBeDefined() // the NEW row
+  expect(await ui.find({ type: 'Text', text: /^Prices and scores: Data from BenchLM\.ai \(benchlm\.ai\), as of 2026-01-02\./ })).toBeDefined()
+  await ui.press({ key: 'ask-gpt-6.3-sol' })
+  expect(submitted[0]).toContain('BenchLM (data as of 2026-01-02) has Sol 6.3 at $1/$5 per 1M input/output tokens, coding 58 (#3), agentic 57 (#3); the current ladder: Sol 6.2: $2/$10 per 1M input/output tokens, coding 51.2 (#4), agentic 52.6 (#4).')
+  await ui.unmount()
+})
+
+test('without BenchLM data, settings says how to add it', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  fixture(on, questionStatus)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: 'settings' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^Add prices and coding scores to this list: get a free key at benchlm\.ai\/data\/access/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'rung 3' })).toBeDefined()
+  await ui.unmount()
+})
+
+// The reminder used to arrive while Claude was still reviewing a job it had just run,
+// moments before (or after) it recorded the verdict.
+function doneJob(on: any) {
+  const files = fixture(on, { ...questionStatus, state: 'done', summary: 'done', question: undefined }, { claims: [{ session: 'me', at: T0 - 2000 }] })
+  const submitted: string[] = []
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: 'ok' }))
+  return { files, submitted }
+}
+
+test('no review reminder for a job Claude has already looked at', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 31e3 + 5e3 })
+  const { submitted } = doneJob(on)
+  await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
+  await $.tool.call({ tool: 'Bash', command: 'agent-handoff review m42e' })
+  await clock.advance(60e3)
+  await clock.advance(60e3)
+  expect(submitted).toEqual([])
+})
+
+test('the review reminder waits until Claude has been quiet, then comes once', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 31e3 + 25e3 }) // finished 25 s ago
+  const { submitted } = doneJob(on)
+  await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
+  await $.tool.call({ tool: 'Read', file_path: '/work/repo/greet.mjs' }) // Claude is busy with something
+  await clock.advance(5e3)
+  expect(submitted).toEqual([])
+  await clock.advance(20e3) // 25 s without a tool call
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain(`agent-handoff review ${ID}`)
+  await clock.advance(60e3)
+  expect(submitted.length).toBe(1)
+})

@@ -4,7 +4,9 @@
 //  - toasts and transcript log lines when the worker picks up, asks, finishes or stalls
 //  - auto-benchmarking: asks Claude to review and rate each finished handoff
 // It only reads ~/.agent-handoff (written by the agent-handoff CLI); buttons call the CLI.
-import { JOB_RE, LIVE, benchRows, clip, familyName, newModels, parseJsonl, safeJson, settingsOf, shortModel, stateOf, workerOf } from './data.js'
+import {
+  JOB_RE, LIVE, benchFor, benchLine, benchRows, clip, familyName, familyOf, modelsFor as modelsForWorker, newModels, parseJsonl, safeJson, settingsOf, shortModel, stateOf, workerOf,
+} from './data.js'
 import { bands, pane } from './view.js'
 
 const PANE = 'agent-handoff'
@@ -33,6 +35,7 @@ let cfg = {} // config.json as the CLI wrote it (the Settings tab edits it throu
 let picking = false // the Change model list is open under the live job
 let offered = {} // { agy: [ids], codex: [ids] }: what each worker lists, from the CLI's model caches
 let offeredAt = 0
+let benchlmData = null // the user's BenchLM prices and scores (benchlm.json), or null without a key
 let verdicts = new Set()
 let notice = ''
 let noticeUntil = 0
@@ -90,6 +93,7 @@ async function refresh($, now) {
     offeredAt = now
     const ids = async (f) => ((await readJson($, `${home}/${f}`))?.models || []).map((x) => x.id).filter(Boolean)
     offered = { agy: await ids('models.json'), codex: await ids('codex-models.json') }
+    benchlmData = await readJson($, `${home}/benchlm.json`)
     await announceNewModels($)
   }
   for (const j of recent) await announce($, j, on)
@@ -154,7 +158,24 @@ async function announce($, j, autobench) {
 // A job nobody claimed (started from a plain shell, or by a session without this
 // mod) is asked of nobody: any session could be the first to look.
 const REVIEW_AFTER_MS = 20e3
+const QUIET_MS = 20e3 // this session's tools must have been idle this long
 const nudged = new Set()
+// Claude is handling a job once it runs review, verify, status, tail, answer, retry
+// or cancel on it: then it gets no reminder. id -> time.
+const touched = new Map()
+// Tool calls in this session: a reminder never lands while Claude is mid-turn
+// (a long foreground `run` included); it waits for QUIET_MS of silence.
+let toolsInFlight = 0
+let lastToolAt = 0
+const TOUCH_RE = /\bagent-handoff\s+(?:review|verify|status|tail|answer|retry|cancel)\b(?:\s+([0-9a-z-]{4,13})\b)?/g
+function markTouched(command, now) {
+  for (const m of String(command || '').matchAll(TOUCH_RE)) {
+    const arg = m[1]
+    const hit = arg ? ids.filter((id) => id === arg || id.endsWith(arg) || id.startsWith(arg)) : []
+    const id = hit.length === 1 ? hit[0] : !arg || !hit.length ? latest?.id : null
+    if (id) touched.set(id, now)
+  }
+}
 let mySession = null
 async function nudgeReview($, now) {
   const due = recent.filter((j) => /^(done|tests_failed)$/.test(j.status.state) && j.status.finished && !nudged.has(j.id))
@@ -168,6 +189,11 @@ async function nudgeOne($, j, now) {
   const st = j.status
   const age = now - Date.parse(st.finished)
   if (age < REVIEW_AFTER_MS || age > 24 * 3600e3) return
+  // Claude already looked at this job: it is rating it, or chose not to. Never remind.
+  if (touched.get(j.id) >= Date.parse(j.meta.created || st.started || 0)) { nudged.add(j.id); return }
+  // Claude is working (a tool call running, or one moments ago): it may be about to
+  // rate this job. Try again once the session has been quiet for a while.
+  if (toolsInFlight > 0 || now - lastToolAt < QUIET_MS) return
   nudged.add(j.id)
   const created = Date.parse(j.meta.created || st.started)
   const claims = (await $.store.get('claims')) || []
@@ -257,9 +283,18 @@ async function announceNewModels($) {
   for (const n of fresh) $.ui.toast(`${n.worker} now offers ${familyName(n.family)}, which isn't on its ladder. See /handoff settings.`)
 }
 
-// Ask Claude where a new model fits; nothing changes until the user agrees.
+// Ask Claude where a new model fits; nothing changes until the user agrees. With
+// BenchLM data, the prompt carries the new model's and the ladder's figures.
 function askAboutModel($, n) {
-  tellClaude($, { text: `agent-handoff: ${n.worker} now offers ${n.family}${n.efforts.length ? ` (efforts: ${n.efforts.join(', ')})` : ''}, which isn't on its model ladder. Look up how it compares with the current ${n.worker} ladder (\`agent-handoff config\` shows it) on price and agentic coding benchmarks, and suggest where it fits. The ladder runs cheapest first, one model per rung${n.worker === 'codex' ? ', with ids written model:effort' : ''}. Don't change anything until I agree; then apply it with \`agent-handoff config ladder ${n.worker} <id> <id> …\`. To hide it instead: \`agent-handoff config ignore ${n.family}\`.` })
+  const s = settingsOf(cfg)
+  const b = benchFor(benchlmData, n.family)
+  let figures = ''
+  if (b) {
+    const ladderFams = [...new Set(modelsForWorker(s, n.worker).map((id) => familyOf(id)))]
+    const rows = ladderFams.map((f) => benchFor(benchlmData, f) && `${familyName(f)}: ${benchLine(benchFor(benchlmData, f))}`).filter(Boolean)
+    figures = ` BenchLM (data as of ${benchlmData.dataAsOf || 'recently'}) has ${familyName(n.family)} at ${benchLine(b)}; the current ladder: ${rows.join('; ')}. Scores are per model, shared by every effort.`
+  }
+  tellClaude($, { text: `agent-handoff: ${n.worker} now offers ${n.family}${n.efforts.length ? ` (efforts: ${n.efforts.join(', ')})` : ''}, which isn't on its model ladder.${figures} Look up how it compares with the current ${n.worker} ladder (\`agent-handoff config\` shows it) on price and agentic coding benchmarks, and suggest where it fits. The ladder runs cheapest first, one model per rung${n.worker === 'codex' ? ', with ids written model:effort' : ''}. Don't change anything until I agree; then apply it with \`agent-handoff config ladder ${n.worker} <id> <id> …\`. To hide it instead: \`agent-handoff config ignore ${n.family}\`.` })
 }
 
 // Claude needs to hear about what the user does in the pane, or it would answer,
@@ -319,6 +354,25 @@ async function setAutobench($, value) {
   benchOn = autobenchOf(await readJson($, `${home}/config.json`))
 }
 
+// Claude handing off: follow the new job and open the pane beside the transcript.
+async function onBashHandoff($, e) {
+  const m = HANDOFF_RE.exec(String(e.command || ''))
+  if (m) {
+    selId = null
+    tab = 'live'
+    if (m[1] === 'run') {
+      const claims = (await $.store.get('claims')) || []
+      await $.store.set('claims', [...claims, { session: mySession, at: await $.clock.now() }].slice(-20))
+    }
+    const to = /--backend[= ](agy|codex)\b/.exec(String(e.command || ''))?.[1] || 'a worker'
+    $.ui.toast(m[1] === 'run' ? `Claude is handing a task to ${to}` : 'Claude is answering the worker')
+    if (m[1] === 'run' && !paneOpen) {
+      paneOpen = true
+      try { await $.ui.open({ id: PANE, title: TITLE }) } catch { paneOpen = false }
+    }
+  }
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     try {
@@ -326,6 +380,12 @@ export function register(on) {
       home = custom || `${await $.env.get('HOME')}/.agent-handoff`
       runtime = await readJson($, `${home}/runtime.json`)
       mySession = await $.session.id()
+      // BenchLM data older than a week: refresh it in the background (3 reads of the
+      // user's key). No data yet means no key, so nothing to do.
+      const bl = await readJson($, `${home}/benchlm.json`)
+      if (runtime && bl?.at && (await $.clock.now()) - bl.at > 7 * 86400e3) {
+        $.process.run(['/bin/sh', '-c', 'nohup "$0" "$1" stats --if-stale >/dev/null 2>&1 &', runtime.node, runtime.cli]).catch(() => {})
+      }
       await refresh($, await $.clock.now())
     } catch { /* no jobs yet */ }
     primed = true
@@ -336,7 +396,7 @@ export function register(on) {
         const now = await $.clock.now()
         await refresh($, now)
         await nudgeReview($, now)
-        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn, cfg, offered])
+        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn, cfg, offered, benchlmData?.at])
         const live = recent.some((j) => LIVE.has(j.status.state))
         if (sig !== drawn || live || (notice && now > noticeUntil)) {
           drawn = sig
@@ -375,24 +435,21 @@ export function register(on) {
     return next(e)
   }).catch(async ($, e, next) => next(e))
 
-  // Claude handing off: follow the new job and open the pane beside the transcript.
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const m = HANDOFF_RE.exec(String(e.command || ''))
-    if (m) {
-      selId = null
-      tab = 'live'
-      if (m[1] === 'run') {
-        const claims = (await $.store.get('claims')) || []
-        await $.store.set('claims', [...claims, { session: mySession, at: await $.clock.now() }].slice(-20))
+  // Every tool call: note that Claude is busy (no review reminders mid-turn), and
+  // which jobs it has looked at. Bash handoffs also open and follow the pane.
+  on('tool.call', async ($, e, next) => {
+    toolsInFlight++
+    lastToolAt = await $.clock.now()
+    try {
+      if (e.tool === 'Bash') {
+        markTouched(e.command, lastToolAt)
+        await onBashHandoff($, e)
       }
-      const to = /--backend[= ](agy|codex)\b/.exec(String(e.command || ''))?.[1] || 'a worker'
-      $.ui.toast(m[1] === 'run' ? `Claude is handing a task to ${to}` : 'Claude is answering the worker')
-      if (m[1] === 'run' && !paneOpen) {
-        paneOpen = true
-        try { await $.ui.open({ id: PANE, title: TITLE }) } catch { paneOpen = false }
-      }
+      return await next(e)
+    } finally {
+      toolsInFlight = Math.max(0, toolsInFlight - 1)
+      lastToolAt = await $.clock.now()
     }
-    return next(e)
   }).catch(async ($, e, next) => next(e))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -414,7 +471,7 @@ export function register(on) {
     const pos = job ? ids.indexOf(job.id) : -1
     return pane(E, {
       tab, job, jobs, bench, quota, now, notice, expanded, cols: e.props?.bodyColumns,
-      settings: settingsOf(cfg), picking: picking && !!job, newModels: newModels(offered, settingsOf(cfg)),
+      settings: settingsOf(cfg), picking: picking && !!job, newModels: newModels(offered, settingsOf(cfg)), benchlm: benchlmData,
       active: activeJobs(now),
       following: !selId,
       jobState: job ? effState(job.status, job.meta, now) : null,

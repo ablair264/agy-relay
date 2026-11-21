@@ -2,11 +2,12 @@
 // agent-handoff — hand work to a worker agent (Antigravity/agy or Codex), pick the
 // model, watch the run, talk back to it, and keep a benchmark ledger. See ../SKILL.md.
 import fs from 'node:fs';
-import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, LEDGER } from '../lib/store.mjs';
+import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, HOME, LEDGER } from '../lib/store.mjs';
 import { holder, pidAlive, queued, releaseLock, tryLock, waitTurn } from '../lib/queue.mjs';
 import { BACKENDS, ORDER } from '../lib/backends/index.mjs';
 import { config, modelOn, modelsOf, setConfig, workerOn, CONFIG } from '../lib/config.mjs';
-import { familyName, newModels, settingsOf } from '../hooks/data.js';
+import { benchFor, benchLine, familyName, familyOf, newModels, priceText, scoreText, settingsOf } from '../hooks/data.js';
+import * as benchlm from '../lib/benchlm.mjs';
 import { KINDS, LADDER, pct, route, stats } from '../lib/route.mjs';
 import { EXIT, brief, runTurn } from '../lib/run.mjs';
 import { reviewPacket } from '../lib/review.mjs';
@@ -26,11 +27,13 @@ const USAGE = `agent-handoff <command>
   bench  [--kind K]               success rate, time and tokens per kind x model
   jobs                            recent jobs
   quota                           remaining agy (Gemini) quota and any Codex usage limit
-  models                          ladder models each backend has
+  models                          ladder models each backend has, and new ones it offers
+  stats  [--refresh] [--if-stale] price and coding/agentic scores per model, from BenchLM (your free key)
   autobench [on|off]              show or switch auto-benchmarking (Claude rates every finished handoff)
   config [key value]              show or set settings:
            backend auto|agy|codex · autobench on|off · worker agy|codex on|off
            model <id> on|off · limit low <pct> (prefer the other worker below) · limit stop <pct> (never use below)
+           ladder <worker> <ids…>|default · ignore <family> on|off · benchlm-key <key>|off
   demo   [--dir PATH] [--once]   sample jobs for screenshots, animated until Ctrl+C (see README)
   cancel [id]                     stop a running or queued job
 
@@ -265,7 +268,7 @@ const commands = {
   review: (o) => { console.log(reviewPacket(resolveJob(o._[1]))); return 0; },
   run: cmdRun, retry: cmdRetry, answer: cmdAnswer, status: cmdStatus, tail: cmdTail, verify: cmdVerify, bench: cmdBench, jobs: cmdJobs, cancel: cmdCancel,
   route: (o) => { printRoute(route({ task: taskOf(o), kind: o.kind, write: !!o.write, complex: o.complex, model: o.model, backend: o.backend, explore: false })); return 0; },
-  quota: cmdQuota, models: cmdModels, config: cmdConfig,
+  quota: cmdQuota, models: cmdModels, config: cmdConfig, stats: cmdStats,
   autobench: (o) => cmdConfig({ _: ['config', ...(o._[1] ? ['autobench', o._[1]] : [])] }),
   demo: async (o) => (await import('../lib/demo.mjs')).demo(o),
   setup: (o) => {
@@ -304,14 +307,62 @@ function cmdModels() {
     for (const m of modelsOf(c, b)) console.log(`${have.has(m) ? '✓' : '✗'} ${b.padEnd(6)} ${m}${have.size && !have.has(m) ? '   not offered: routing skips it' : ''}`);
   }
   // Families a worker offers that no ladder knows: the pane's Settings tab flags them too.
+  const bench = benchlm.cached();
   for (const n of newModels(offered, settingsOf(c))) {
+    const b = benchFor(bench, n.family);
     console.log(`new ${n.worker.padEnd(6)} ${n.family} (${familyName(n.family)})${n.efforts.length ? `: ${n.efforts.join(', ')}` : ''}. Not on the ladder; add it with agent-handoff config ladder ${n.worker} …, or hide it: agent-handoff config ignore ${n.family}`);
+    if (b) console.log(`           BenchLM: ${benchLine(b)}`);
   }
+  if (bench) console.log(`\n${bench.attribution.split(';')[0]} (${benchlm.SOURCE_URL}), as of ${bench.dataAsOf || 'unknown'}`);
+  return 0;
+}
+
+// Price and scores for every model on the ladders (and any new family a worker
+// offers), from the cached BenchLM data; --refresh fetches it (3 reads of your key).
+async function cmdStats(o) {
+  const quiet = !!o['if-stale'];
+  let bench = benchlm.cached();
+  if (o.refresh || o['if-stale'] || !bench) {
+    if (!benchlm.key()) {
+      if (quiet) return 0;
+      throw new Error('no BenchLM key: create a free one at https://benchlm.ai/data/access, then run agent-handoff config benchlm-key <key>');
+    }
+    try { bench = await benchlm.refresh({ force: !!o.refresh }); } catch (e) { if (quiet) return 0; throw e; }
+    if (quiet) return 0;
+  }
+  const c = config();
+  const s = settingsOf(c);
+  const seen = new Set();
+  const rows = [];
+  for (const w of ORDER) {
+    for (const id of modelsOf(c, w)) {
+      const f = familyOf(id);
+      if (seen.has(f)) continue;
+      seen.add(f);
+      rows.push([w, familyName(f), benchFor(bench, f), modelsOf(c, w).filter((m) => familyOf(m) === f).map((m) => m.split(':')[1] || m.split('-').pop()).join(' '), '']);
+    }
+  }
+  const offered = {};
+  for (const w of ORDER) offered[w] = (readJSON(`${HOME}/${w === 'agy' ? 'models.json' : 'codex-models.json'}`)?.models || []).map((m) => m.id);
+  for (const n of newModels(offered, s)) rows.push([n.worker, familyName(n.family), benchFor(bench, n.family), n.efforts.join(' '), 'new']);
+  const head = ['worker', 'model', '$/1M in/out', 'coding', 'agentic', 'overall', 'efforts', ''];
+  const body = rows.map(([w, name, b, eff, tag]) => [w, name, priceText(b) || '-', b?.coding ? `${scoreText(b.coding)} #${b.coding.rank}` : '-', b?.agentic ? `${scoreText(b.agentic)} #${b.agentic.rank}` : '-', b?.overall ? `${scoreText(b.overall)} #${b.overall.rank}` : '-', eff, tag]);
+  const wd = head.map((h, i) => Math.max(h.length, ...body.map((r) => String(r[i]).length)));
+  for (const r of [head, ...body]) console.log(r.map((x, i) => String(x).padEnd(wd[i])).join('  ').trimEnd());
+  console.log("\nScores (0-100) and ranks are BenchLM's, per model: every effort of a model shares them.");
+  console.log(`${bench.attribution.split(';')[0]} (${benchlm.SOURCE_URL}), as of ${bench.dataAsOf || 'unknown'}${bench.readsLeft !== null && bench.readsLeft !== undefined ? ` · ${bench.readsLeft} reads left this month on your key` : ''}.`);
   return 0;
 }
 
 function cmdConfig(o) {
   const [, key, ...values] = o._;
+  // The BenchLM key is a secret: its own 0600 file, never config.json, never printed.
+  if (key === 'benchlm-key') {
+    const f = benchlm.setKey(values[0]);
+    if (!f) { console.log('BenchLM key removed.'); return 0; }
+    console.log(`BenchLM key saved in ${f} (readable only by you). Fetching prices and scores…\n`);
+    return cmdStats({ refresh: true });
+  }
   if (key) setConfig(key, ...values);
   const c = config();
   const lines = [
@@ -325,6 +376,9 @@ function cmdConfig(o) {
     lines.push(`${w} models${workerOn(c, w) ? '' : ' (worker off)'}${c.ladders?.[w]?.length ? ' (your own ladder; reset: agent-handoff config ladder ' + w + ' default)' : ''}`);
     for (const m of modelsOf(c, w)) lines.push(`  ${modelOn(c, m) ? '✓' : '✗'} ${m}${BACKENDS[w].LADDER.includes(m) ? '' : '  (overflow)'}`);
   }
+  const k = benchlm.key();
+  const b = benchlm.cached();
+  lines.push(`benchlm   ${k ? `key set (${k.from === benchlm.KEY_FILE ? 'key file' : k.from})` : 'no key (prices and scores: agent-handoff config benchlm-key <key>)'}${b?.dataAsOf ? `; data as of ${b.dataAsOf}` : ''}`);
   lines.push(`(${CONFIG}; env AGENT_HANDOFF_BACKEND / AGENT_HANDOFF_AUTOBENCH override)`);
   console.log(lines.join('\n'));
   return 0;
