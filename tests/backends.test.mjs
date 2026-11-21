@@ -1,5 +1,5 @@
 // Relay CLI + backend tests. Run: node --test tests/backends.test.mjs
-// Uses a fake codex binary and a throwaway AGY_RELAY_HOME; agy is made absent.
+// Uses a fake codex binary and a throwaway AGENT_HANDOFF_HOME; agy is made absent.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,15 +9,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(here, '../cli/agy-relay');
+const CLI = path.join(here, '../cli/agent-handoff');
 const FAKE = path.join(here, 'fixtures/fake-codex.mjs');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-test-'));
 const HOME = path.join(tmp, 'home');
-process.env.AGY_RELAY_HOME = HOME; // before importing lib modules
+process.env.AGENT_HANDOFF_HOME = HOME; // before importing lib modules
 fs.chmodSync(FAKE, 0o755);
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const env = (extra = {}) => ({ ...process.env, AGY_RELAY_HOME: HOME, CODEX_BIN: FAKE, AGY_BIN: path.join(tmp, 'no-agy'), AGY_RELAY_EXPLORE: '0', ...extra });
+const env = (extra = {}) => ({ ...process.env, AGENT_HANDOFF_HOME: HOME, CODEX_BIN: FAKE, AGY_BIN: path.join(tmp, 'no-agy'), AGENT_HANDOFF_EXPLORE: '0', ...extra });
 const cli = (args, extra) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: env(extra), timeout: 60e3 });
 
 function repo() {
@@ -75,10 +75,10 @@ test('codex: usage limit ends the job as limited and the router skips codex', ()
   fs.rmSync(path.join(HOME, 'codex-limit.json'));
 });
 
-test('bench off: fixed rung, no verdict asked, config round-trips', () => {
-  assert.match(cli(['config', 'bench', 'off']).stdout, /bench\s+off/);
+test('auto-benchmarking off: fixed rung, no verdict asked, config round-trips', () => {
+  assert.match(cli(['config', 'autobench', 'off']).stdout, /autobench off/);
   const rt = cli(['route', '--backend', 'codex', 'Review the diff in foo.mjs']);
-  assert.match(rt.stdout, /bench off: fixed starting rung/);
+  assert.match(rt.stdout, /auto-benchmarking off: fixed starting rung/);
   assert.match(rt.stdout, /model: gpt-6.1-sol:high/); // review starts on rung 4
   const dir = repo();
   fs.writeFileSync(path.join(dir, 'greet.mjs'), 'export const greet = (n) => n;\n');
@@ -86,9 +86,9 @@ test('bench off: fixed rung, no verdict asked, config round-trips', () => {
   assert.equal(r.status, 10);
   const id = fs.readdirSync(path.join(HOME, 'jobs')).sort().pop();
   const r2 = cli(['answer', id, 'English']);
-  assert.match(r2.stdout, /bench off: no verdict needed/);
-  assert.match(cli(['config', 'bench', 'on']).stdout, /bench\s+on/);
-  assert.match(cli(['config', 'backend', 'codex']).stdout, /backend codex/);
+  assert.match(r2.stdout, /auto-benchmarking off: no verdict needed/);
+  assert.match(cli(['config', 'autobench', 'on']).stdout, /autobench on/);
+  assert.match(cli(['config', 'backend', 'codex']).stdout, /backend\s+codex/);
   assert.equal(cli(['config', 'backend', 'gemini']).status, 2);
 });
 

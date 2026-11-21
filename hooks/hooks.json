@@ -1,4 +1,6 @@
 {
-  "description": "agy-relay mod: live handoff pane, band above the prompt, toasts",
-  "modules": ["./register.js"]
+  "description": "agent-handoff mod: /handoff pane, band above the prompt, toasts, auto-benchmark reviews",
+  "modules": [
+    "./register.js"
+  ]
 }

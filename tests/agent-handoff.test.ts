@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-const HOME = '/fake/.agy-relay'
+const HOME = '/fake/.agent-handoff'
 const ID = '11120042-m42e'
 const T0 = Date.parse('2026-11-12T01:00:00Z')
 const at = (s: number) => new Date(T0 + s * 1000).toISOString()
@@ -26,7 +26,7 @@ function fixture(on: any, status: any, store: Record<string, unknown> = {}, meta
     [`${HOME}/jobs/${ID}/meta.json`]: JSON.stringify({ ...meta, ...metaOver }),
     [`${HOME}/jobs/${ID}/status.json`]: JSON.stringify(status),
     [`${HOME}/jobs/${ID}/events.jsonl`]: events.map((e) => JSON.stringify(e)).join('\n') + '\n',
-    [`${HOME}/runtime.json`]: JSON.stringify({ node: '/usr/bin/node', cli: '/x/bin/agy-relay' }),
+    [`${HOME}/runtime.json`]: JSON.stringify({ node: '/usr/bin/node', cli: '/x/bin/agent-handoff' }),
     [`${HOME}/ledger.jsonl`]: [
       { type: 'run', id: 'a', kind: 'implement', model: 'gemini-4-hydrogen-high', state: 'done', duration_s: 60, tokens: { total: 90000 }, tests_pass: true },
       { type: 'run', id: 'b', kind: 'analysis', model: 'gemini-4-neon-low', state: 'done', duration_s: 29, tokens: { total: 54000 } },
@@ -44,8 +44,8 @@ function fixture(on: any, status: any, store: Record<string, unknown> = {}, meta
 }
 
 const PANE = (surface: 'terminal' | 'desktop') => ({
-  plugin: 'agy-relay', component: 'Pane', requestId: 'agy-relay', surface, viewport: { columns: 160, rows: 50 },
-  props: { title: 'agy', isFocused: true, bodyColumns: 70, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  plugin: 'agent-handoff', component: 'Pane', requestId: 'agent-handoff', surface, viewport: { columns: 160, rows: 50 },
+  props: { title: 'handoff', isFocused: true, bodyColumns: 70, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const)
 
 test('the pane shows the handoff and lets you answer agy', async ($, on) => {
@@ -60,7 +60,7 @@ test('the pane shows the handoff and lets you answer agy', async ($, on) => {
   on('ui.toast', () => ({ value: undefined }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.command.run({ command: 'agy', args: '' })
+  await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   expect(await ui.find({ type: 'Text', text: /^handed off → Hydrogen high · implement · write$/ })).toBeDefined()
@@ -78,7 +78,7 @@ test('the pane shows the handoff and lets you answer agy', async ($, on) => {
   expect(runs.length).toBe(1)
   expect(submitted.length).toBe(1)
   expect(runs[0].slice(0, 2)).toEqual(['/bin/sh', '-c'])
-  expect(runs[0].slice(-4)).toEqual(['/usr/bin/node', '/x/bin/agy-relay', ID, 'Spanish'])
+  expect(runs[0].slice(-4)).toEqual(['/usr/bin/node', '/x/bin/agent-handoff', ID, 'Spanish'])
   expect(submitted[0]).toContain(`job ${ID}`)
   await ui.unmount()
 })
@@ -92,7 +92,7 @@ test('a codex job is labelled codex in the band, timeline and answer field', asy
   on('ui.toast', () => ({ value: undefined }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.command.run({ command: 'agy', args: '' })
+  await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   expect(await ui.find({ type: 'Text', text: /^codex$/ })).toBeDefined()
@@ -108,11 +108,11 @@ test('Desktop gets the activity strip; a finished job waits for Claude, not a bu
   on('ui.open', () => ({ value: { isPlaced: true } }))
 
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
-  await $.command.run({ command: 'agy', args: 'm42e' })
+  await $.command.run({ command: 'handoff', args: 'm42e' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('desktop'))
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Awaiting Claude’s review · agy-relay review m42e$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Awaiting Claude’s review · agent-handoff review m42e$/ })).toBeDefined()
   expect(await ui.find({ key: 'verify-pass' })).toBeUndefined()
   await ui.unmount()
 })
@@ -129,7 +129,7 @@ test('a finished job with no verdict prompts Claude to review it, once', async (
   await clock.advance(1000)
   await clock.advance(1000)
   expect(submitted.length).toBe(1)
-  expect(submitted[0]).toContain(`agy-relay review ${ID}`)
+  expect(submitted[0]).toContain(`agent-handoff review ${ID}`)
 })
 
 test('a job another session launched is left for that session to review', async ($, on) => {
@@ -166,7 +166,7 @@ test('the band follows a live job and a toast says when agy asks', async ($, on)
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   const band = await $.ui.mount({
-    plugin: 'agy-relay', component: 'AbovePrompt', surface: 'terminal', viewport: { columns: 160, rows: 50 },
+    plugin: 'agent-handoff', component: 'AbovePrompt', surface: 'terminal', viewport: { columns: 160, rows: 50 },
     props: { hasSurvey: false, isWorking: true, maxRows: 4, bodyColumns: 120, scroll: { offset: 0, bodyRows: 4 }, view: {} },
   } as any)
   expect(await band.find({ type: 'Text', text: /read_file greet\.mjs/ })).toBeDefined()
@@ -178,15 +178,15 @@ test('the band follows a live job and a toast says when agy asks', async ($, on)
   await band.unmount()
 })
 
-test('with the bench off a finished job shows no pending review', async ($, on) => {
+test('with auto-benchmarking off a finished job shows no pending review', async ($, on) => {
   const clock = mock.clock(on, { now: T0 + 40e3 })
   const files = fixture(on, { ...questionStatus, state: 'done', summary: 'Spanish greeting added.', question: undefined })
-  files[`${HOME}/config.json`] = JSON.stringify({ backend: 'auto', bench: false })
+  files[`${HOME}/config.json`] = JSON.stringify({ backend: 'auto', autobench: false })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.command.run({ command: 'agy', args: '' })
+  await $.command.run({ command: 'handoff', args: '' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   expect(await ui.find({ type: 'Text', text: /^asks: / })).toBeDefined()
@@ -200,7 +200,7 @@ test('the bench tab scores each kind and model', async ($, on) => {
   fixture(on, questionStatus)
   on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.command.run({ command: 'agy', args: 'bench' })
+  await $.command.run({ command: 'handoff', args: 'bench' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
   expect(await ui.find({ type: 'Text', text: '── IMPLEMENT' })).toBeDefined()
@@ -218,6 +218,75 @@ test('a handoff from Claude opens the pane', async ($, on) => {
   on('ui.toast', () => ({ value: undefined }))
   on('tool.call', () => ({ result: 'ok' }))
   await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
-  await $.tool.call({ tool: 'Bash', command: 'agy-relay run --write --dir . "do it"' })
-  expect(opened).toEqual(['agy-relay'])
+  await $.tool.call({ tool: 'Bash', command: 'agent-handoff run --write --dir . "do it"' })
+  expect(opened).toEqual(['agent-handoff'])
+})
+
+test('auto-benchmark asks Claude to rate a finished job 20 s after it ends', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 31e3 + 21e3 })
+  fixture(on, { ...questionStatus, state: 'done', summary: 'done', question: undefined }, { claims: [{ session: 'me', at: T0 - 2000 }] })
+  const submitted: string[] = []
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
+  await clock.advance(1000)
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toMatch(/^Auto-benchmark: agent-handoff job .* \(agy\) finished/)
+})
+
+test('a config.json from before the rename (bench: false) still turns auto-benchmarking off', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 31e3 + 50e3 })
+  const files = fixture(on, { ...questionStatus, state: 'done', summary: 'done', question: undefined }, { claims: [{ session: 'me', at: T0 - 2000 }] })
+  files[`${HOME}/config.json`] = JSON.stringify({ backend: 'auto', bench: false })
+  const submitted: string[] = []
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/work' })
+  await clock.advance(1000)
+  await clock.advance(1000)
+  expect(submitted.length).toBe(0)
+})
+
+// The CLI owns config.json; this stand-in writes what `config autobench on|off` would.
+function fakeCli(on: any, files: Record<string, string>, runs: string[][]) {
+  on('process.run', ($: any, e: any) => {
+    runs.push(e.argv)
+    const i = e.argv.indexOf('autobench')
+    if (e.argv.includes('config') && i > 0) files[`${HOME}/config.json`] = JSON.stringify({ backend: 'auto', autobench: e.argv[i + 1] === 'on' })
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+}
+
+test('the bench tab switches auto-benchmarking off and on', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  const runs: string[][] = []
+  fakeCli(on, files, runs)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: 'bench' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: ' ON ' })).toBeDefined()
+  await ui.press({ key: 'autobench' })
+  expect(runs[0].slice(-3)).toEqual(['config', 'autobench', 'off'])
+  await clock.advance(1000)
+  expect(await ui.find({ type: 'Text', text: ' OFF ' })).toBeDefined()
+  expect(await ui.find({ key: 'autobench' })).toMatchObject({ props: { label: 'Turn on' } })
+  await ui.press({ key: 'autobench' })
+  expect(runs[1].slice(-3)).toEqual(['config', 'autobench', 'on'])
+  await ui.unmount()
+})
+
+test('/handoff autobench off turns it off from the prompt', async ($, on) => {
+  mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  const runs: string[][] = []
+  fakeCli(on, files, runs)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const r: any = await $.command.run({ command: 'handoff', args: 'autobench off' })
+  expect(runs[0].slice(-3)).toEqual(['config', 'autobench', 'off'])
+  expect(r.text).toMatch(/^Auto-benchmarking is off/)
 })

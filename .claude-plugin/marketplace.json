@@ -1,14 +1,14 @@
 {
-  "name": "agy-relay",
+  "name": "agent-handoff",
   "owner": {
-    "name": "agy-relay"
+    "name": "agent-handoff"
   },
   "plugins": [
     {
-      "name": "agy-relay",
+      "name": "agent-handoff",
       "source": "./",
-      "description": "Delegate coding tasks from Claude Code to Antigravity or Codex, with live progress, follow-up questions, and local benchmarks."
+      "description": "Hand coding tasks from Claude Code to Codex (GPT) or Antigravity (Gemini), watch them live in a pane, answer their questions, and auto-benchmark every handoff so the best model gets picked next time."
     }
   ],
-  "description": "Install the agy-relay coding handoff plugin for Claude Code."
+  "description": "agent-handoff: a Claude Code plugin that hands coding tasks to Codex or Antigravity (Gemini) and benchmarks the results."
 }

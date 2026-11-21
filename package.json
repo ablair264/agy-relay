@@ -1,14 +1,27 @@
 {
-  "name": "agy-relay",
-  "version": "0.2.0",
+  "name": "agent-handoff",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Delegate coding tasks from Claude Code to Antigravity or Codex, with live progress, follow-up questions, and local benchmarks.",
+  "description": "Hand coding tasks from Claude Code to Codex (GPT) or Antigravity (Gemini), watch them live in a pane, answer their questions, and auto-benchmark every handoff so the best model gets picked next time.",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "test:mod": "claude plugin test ."
-  }
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "mod",
+    "handoff",
+    "delegate",
+    "subagent",
+    "codex",
+    "gemini",
+    "antigravity",
+    "benchmark",
+    "model-routing"
+  ]
 }

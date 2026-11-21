@@ -35,7 +35,7 @@ if (argv[0] === 'app-server') {
 } else {
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const opt = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : null; };
-fs.writeFileSync(path.join(process.env.AGY_RELAY_HOME, 'fake-codex-args.json'), JSON.stringify(argv));
+fs.writeFileSync(path.join(process.env.AGENT_HANDOFF_HOME, 'fake-codex-args.json'), JSON.stringify(argv));
 const resume = argv[1] === 'resume';
 const dir = process.cwd();
 const last = opt('-o');

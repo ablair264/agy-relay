@@ -1,12 +1,25 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "agy-relay",
-  "version": "0.2.0",
-  "description": "Delegate coding tasks from Claude Code to Antigravity or Codex, with live progress, follow-up questions, and local benchmarks.",
+  "name": "agent-handoff",
+  "version": "0.3.0",
+  "description": "Hand coding tasks from Claude Code to Codex (GPT) or Antigravity (Gemini), watch them live in a pane, answer their questions, and auto-benchmark every handoff so the best model gets picked next time.",
   "author": {
-    "name": "agy-relay"
+    "name": "agent-handoff"
   },
   "skills": [
     "./"
+  ],
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "mod",
+    "handoff",
+    "delegate",
+    "subagent",
+    "codex",
+    "gemini",
+    "antigravity",
+    "benchmark",
+    "model-routing"
   ]
 }

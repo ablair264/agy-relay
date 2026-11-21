@@ -1,4 +1,4 @@
-// Pure helpers for the agy-relay mod: no mods API, no Node APIs.
+// Pure helpers for the agent-handoff mod: no mods API, no Node APIs.
 
 export const JOB_RE = /^\d{8}-[a-z0-9]{4}$/
 

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(here, '../cli/agy-relay');
+const CLI = path.join(here, '../cli/agent-handoff');
 const FAKE = path.join(here, 'fixtures/fake-codex.mjs');
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'relay-queue-')));
 const HOME = path.join(tmp, 'home');
@@ -18,7 +18,7 @@ const procs = [];
 after(() => { for (const p of procs) try { p.kill('SIGKILL'); } catch { /* gone */ } fs.rmSync(tmp, { recursive: true, force: true }); });
 fs.chmodSync(FAKE, 0o755);
 
-const env = (extra = {}) => ({ ...process.env, AGY_RELAY_HOME: HOME, CODEX_BIN: FAKE, AGY_BIN: path.join(tmp, 'no-agy'), AGY_RELAY_EXPLORE: '0', ...extra });
+const env = (extra = {}) => ({ ...process.env, AGENT_HANDOFF_HOME: HOME, CODEX_BIN: FAKE, AGY_BIN: path.join(tmp, 'no-agy'), AGENT_HANDOFF_EXPLORE: '0', ...extra });
 const repo = () => {
   const d = fs.mkdtempSync(path.join(tmp, 'r-'));
   spawnSync('git', ['init', '-q'], { cwd: d });
@@ -84,11 +84,11 @@ test('cancel removes a queued job; codex does not wait for an agy lock', async (
 
 test('the legacy run.lock still blocks agy', async () => {
   const { tryLock } = await import('../lib/queue.mjs');
-  // queue.mjs reads AGY_RELAY_HOME at import via store.mjs; use the test HOME.
-  assert.ok(process.env.AGY_RELAY_HOME === undefined || true);
+  // queue.mjs reads AGENT_HANDOFF_HOME at import via store.mjs; use the test HOME.
+  assert.ok(process.env.AGENT_HANDOFF_HOME === undefined || true);
   fs.mkdirSync(HOME, { recursive: true });
   fs.writeFileSync(path.join(HOME, 'run.lock'), JSON.stringify({ pid: process.ppid, id: 'legacy-job' }));
-  const r = spawnSync(process.execPath, ['-e', `process.env.AGY_RELAY_HOME=${JSON.stringify(HOME)}; import(${JSON.stringify(path.join(here, '../lib/queue.mjs'))}).then(q => console.log(JSON.stringify(q.tryLock('agy','x'))))`], { encoding: 'utf8', env: env() });
+  const r = spawnSync(process.execPath, ['-e', `process.env.AGENT_HANDOFF_HOME=${JSON.stringify(HOME)}; import(${JSON.stringify(path.join(here, '../lib/queue.mjs'))}).then(q => console.log(JSON.stringify(q.tryLock('agy','x'))))`], { encoding: 'utf8', env: env() });
   assert.match(r.stdout, /legacy-job/, r.stderr);
   void tryLock;
 });

@@ -1,4 +1,4 @@
-// Element trees for the agy-relay pane and the band above the prompt.
+// Element trees for the agent-handoff pane and the band above the prompt.
 // Takes the elements from $.ui.resolve(e) and plain data; never the mods API.
 // Style: monospace throughout, small uppercase section labels, straight rules,
 // no bordered boxes. Every Text is mono so padded columns line up in Desktop too.
@@ -75,7 +75,7 @@ export function pane(E, m) {
   const tab = (id, text, hotkey) => E.Button({ key: 'tab-' + id, label: text, hotkey, plain: true, dimColor: m.tab !== id, onPress: () => m.actions.setTab(id) })
   // Groups are separated by space, not lines: title + tabs, quota, notice, body.
   const kids = [
-    spread(E, label(E, 'agy relay'), dim(E, m.job ? `${m.job.id} · ${shortModel(m.job.meta.model)}` : '')),
+    spread(E, label(E, 'handoff'), dim(E, m.job ? `${m.job.id} · ${shortModel(m.job.meta.model)}` : '')),
     row(E, [tab('live', 'LIVE', '1'), tab('jobs', 'JOBS', '2'), tab('bench', 'BENCH', '3')], { columnGap: 3 }),
   ]
   if (m.quota) kids.push(T(E, ' '), ...quotaMeters(E, m.quota))
@@ -97,7 +97,7 @@ function quotaMeters(E, q) {
 
 function liveTab(E, m0, w) {
   const j = m0.job
-  if (!j) return empty(E, 'No handoff yet', 'Claude starts one with `agy-relay run`, or use /agy-task or /codex-task.')
+  if (!j) return empty(E, 'No handoff yet', 'Ask Claude to hand a task off, or use /agent-handoff:codex-task or /agent-handoff:agy-task.')
   const st = j.status, meta = j.meta
   const W = workerOf(meta)
   const m = { ...m0, worker: W }
@@ -237,11 +237,11 @@ function item(E, it, m = {}) {
 
 function review(E, items, st, running, m) {
   const rows = items.filter((it) => it.kind === 'gate' || it.kind === 'verdict').flatMap((it) => item(E, it))
-  // With the bench off nobody rates jobs, so never show a review as pending.
+  // With auto-benchmarking off nobody rates jobs, so never show a review as pending.
   const waiting = m.benchOn !== false && !running && /^(done|tests_failed)$/.test(st.state) && !m.verdict
   if (!rows.length && !waiting) return []
   const out = [T(E, ' '), section(E, 'review'), ...rows]
-  if (waiting) out.push(dim(E, `Awaiting Claude’s review · agy-relay review ${String(st.id || m.job?.id || '').slice(-4)}`, { wrap: 'truncate' }))
+  if (waiting) out.push(dim(E, `Awaiting Claude’s review · agent-handoff review ${String(st.id || m.job?.id || '').slice(-4)}`, { wrap: 'truncate' }))
   return out
 }
 
@@ -284,10 +284,25 @@ function jobsTab(E, m) {
   })]
 }
 
+// The auto-benchmarking switch heads the Bench tab: on, Claude rates every finished
+// handoff and the ratings steer routing; off, nothing is rated and routing is fixed.
+function autobenchSwitch(E, m) {
+  const on = m.benchOn !== false
+  return [
+    spread(E,
+      row(E, [dim(E, 'AUTO-BENCHMARK'), chip(E, on ? 'ON' : 'OFF', on ? 'green' : undefined)]),
+      E.Button({ key: 'autobench', label: on ? 'Turn off' : 'Turn on', hotkey: 'a', plain: true, onPress: m.actions.toggleAutobench })),
+    dim(E, on
+      ? 'Claude reviews and rates every finished handoff; the ratings pick the model next time.'
+      : 'Finished handoffs are not rated; each kind of task uses a fixed model.', { wrap: 'wrap' }),
+    T(E, ' '),
+  ]
+}
+
 // Bench as race lanes: models ranked by pass rate, then speed, per kind of task.
 function benchTab(E, m, w) {
-  if (!m.bench?.length) return empty(E, 'No finished jobs in the ledger yet', 'Pass rates per model appear after the first runs.')
-  const out = []
+  const out = autobenchSwitch(E, m)
+  if (!m.bench?.length) return [...out, ...empty(E, 'No finished jobs in the ledger yet', 'Pass rates per model appear after the first runs.')]
   const kinds = [...new Set(m.bench.map((r) => r.kind))]
   let unverified = 0
   for (const kind of kinds) {

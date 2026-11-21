@@ -3,7 +3,7 @@
 __MACOSX/
 .env
 .env.*
-.agy-relay/
+.agent-handoff/
 .claude/
 node_modules/
 coverage/

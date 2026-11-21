@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agy-relay — hand work to a worker agent (Antigravity/agy or Codex), pick the
+// agent-handoff — hand work to a worker agent (Antigravity/agy or Codex), pick the
 // model, watch the run, talk back to it, and keep a benchmark ledger. See ../SKILL.md.
 import fs from 'node:fs';
 import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, LEDGER } from '../lib/store.mjs';
@@ -11,8 +11,8 @@ import { EXIT, brief, runTurn } from '../lib/run.mjs';
 import { reviewPacket } from '../lib/review.mjs';
 import { doctor, setup } from '../lib/setup.mjs';
 
-const USAGE = `agy-relay <command>
-  setup  [--force]                one-time: put agy-relay on PATH, ready the pane, then run doctor
+const USAGE = `agent-handoff <command>
+  setup  [--force]                one-time: put agent-handoff on PATH, ready the pane, then run doctor
   doctor                          check node, agy, codex (installed + signed in), PATH and the pane
   route  [opts] "task"          show which backend and model a task would get, and why
   run    [opts] "task"            hand a task to the worker and watch it (foreground)
@@ -25,7 +25,8 @@ const USAGE = `agy-relay <command>
   jobs                            recent jobs
   quota                           remaining agy (Gemini) quota and any Codex usage limit
   models                          ladder models each backend has
-  config [key value]              show or set: backend auto|agy|codex, bench on|off
+  autobench [on|off]              show or switch auto-benchmarking (Claude rates every finished handoff)
+  config [key value]              show or set: backend auto|agy|codex, autobench on|off
   cancel [id]                     stop a running job
 
 run/route options:
@@ -68,7 +69,7 @@ function taskOf(o) {
 }
 
 function printRoute(r) {
-  console.log(`backend: ${r.backend}  model: ${r.model}  kind: ${r.kind}${r.bench ? '' : '  (bench off)'}`);
+  console.log(`backend: ${r.backend}  model: ${r.model}  kind: ${r.kind}${r.bench ? '' : '  (auto-benchmarking off)'}`);
   for (const why of r.reasons) console.log(`  - ${why}`);
   if (r.stats) console.log(`  ledger: ${r.stats.runs} runs, pass ${pct(r.stats.rate)}`);
 }
@@ -199,7 +200,7 @@ function cmdBench(o) {
     median(s.secs) ?? '-', s.tokens.length ? Math.round(median(s.tokens) / 1000) : '-', s.stalls, s.questions]);
   const w = head.map((h, i) => Math.max(h.length, ...body.map((r) => String(r[i]).length)));
   for (const r of [head, ...body]) console.log(r.map((c, i) => String(c).padEnd(w[i])).join('  '));
-  if (!config().bench) console.log('\nbench is off: routing ignores these numbers (agy-relay config bench on)');
+  if (!config().autobench) console.log('\nauto-benchmarking is off: routing ignores these numbers (agent-handoff autobench on)');
   const unverified = readLedger().filter((r) => r.state === 'done' && !r.verdict && r.tests_pass == null);
   if (unverified.length) console.log(`\n${unverified.length} done runs lack a verdict (counted at half weight): ${unverified.slice(-5).map((r) => r.id).join(', ')}`);
   return 0;
@@ -226,6 +227,7 @@ const commands = {
   run: cmdRun, answer: cmdAnswer, status: cmdStatus, tail: cmdTail, verify: cmdVerify, bench: cmdBench, jobs: cmdJobs, cancel: cmdCancel,
   route: (o) => { printRoute(route({ task: taskOf(o), kind: o.kind, write: !!o.write, complex: o.complex, model: o.model, backend: o.backend, explore: false })); return 0; },
   quota: cmdQuota, models: cmdModels, config: cmdConfig,
+  autobench: (o) => cmdConfig({ _: ['config', ...(o._[1] ? ['autobench', o._[1]] : [])] }),
   setup: (o) => {
     const s = setup({ force: !!o.force });
     const d = doctor();
@@ -265,7 +267,7 @@ function cmdConfig(o) {
   const [, key, value] = o._;
   if (key) setConfig(key, value);
   const c = config();
-  console.log(`backend ${c.backend}\nbench   ${c.bench ? 'on' : 'off'}\n(${CONFIG}; env AGY_RELAY_BACKEND / AGY_RELAY_BENCH override)`);
+  console.log(`backend   ${c.backend}\nautobench ${c.autobench ? 'on: Claude reviews and rates every finished handoff; ratings steer routing' : 'off: no automatic reviews; fixed routing'}\n(${CONFIG}; env AGENT_HANDOFF_BACKEND / AGENT_HANDOFF_AUTOBENCH override)`);
   return 0;
 }
 
@@ -275,6 +277,6 @@ if (!cmd || o.help) { console.log(USAGE); process.exit(cmd ? 0 : 2); }
 try {
   process.exitCode = await cmd(o);
 } catch (e) {
-  console.error(`agy-relay: ${e.message}`);
+  console.error(`agent-handoff: ${e.message}`);
   process.exitCode = 2;
 }
