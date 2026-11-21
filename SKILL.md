@@ -122,7 +122,13 @@ The user can also act from the pane, and the mod sends you a message each time:
 - **Stopped a job.** Your waiting `run` exits 15 (cancelled). Don't restart it unless the user asks.
 - **Changed the model.** The job was stopped (if it was still going) and its task rerun on the model they picked as a new job, with `retry_of` set in its meta. Follow the newest job with `agent-handoff status`, and check and rate it when it finishes. Don't start it again yourself.
 
+- **Asked where a new model fits** (a message starting "agent-handoff: codex now offers …"). Research the model against the current ladder (`agent-handoff config` shows it): price and agentic-coding benchmarks such as Terminal-Bench. Propose a ladder (cheapest first, one model per rung; codex ids are `model:effort`) and wait for the user to agree. Then save it with `agent-handoff config ladder <worker> <id> <id> …`; `agent-handoff config ladder <worker> default` goes back to the built-in one.
+
 To rerun a job yourself, for example when the user asks for a stronger model, use `agent-handoff retry <id> --model <id>` (or `--backend codex|agy`). It stops the job if it is still running and reruns the same task, directory, write mode and gate.
+
+## The worker's thinking
+
+Codex sends reasoning summaries as it works. The relay prints each as `codex thinking: <headline>` in `tail`, keeps the latest in `status` (`thought`), and the pane shows them. Use them to see why a worker is heading somewhere odd before it finishes, and nudge it with `answer` once it stops.
 
 ## Model routing
 

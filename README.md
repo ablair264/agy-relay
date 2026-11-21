@@ -10,6 +10,7 @@ Claude stays in charge. It writes the brief, picks the worker and model, answers
 - **The `/handoff` pane.** It opens on its own when a handoff starts. It shows a timeline of the handoff (brief, pickup, each tool call, questions, answers, test result, rating), what the worker is doing now, and how long it has been quiet. It has three tabs: **Live**, **Jobs** and **Bench**.
 - **A band above the prompt** while a worker runs, and toasts when it picks up, asks a question, finishes or stalls.
 - **Several jobs at once.** A Codex job and an agy job can run side by side, and jobs started from other Claude Code sessions show up too. The band gives each one its own row, and the pane lists them all with live progress, so you don't have to switch between them.
+- **See what Codex is thinking.** Codex's reasoning summaries appear in the pane as it works: the latest on a THINK line, and all of them in the timeline when you expand it.
 - **Stop or change model from the pane.** Stop a job that's going the wrong way, or rerun it on a different model with one click. Claude is told either way, so it doesn't restart or wait on it.
 - **Settings in the pane.** Choose which workers and models routing may use, the default worker, and your own usage cut-offs.
 - **Answer from the pane.** When the worker asks a question, type the answer in the pane. The worker carries on in the same conversation and Claude is told.
@@ -61,6 +62,8 @@ The `/handoff` pane opens and follows the job. Workers are **read-only by defaul
 
 When more than one job is active, the Live tab starts with an **Active** list: one row per job with its worker, state, model, what it's doing right now and how long it has been running. Jobs waiting on your answer stay listed for 30 minutes, and finished jobs for a minute. `▸` marks the job whose full timeline is shown below; select another row to switch. The band above the prompt shows the same jobs, one row each, and puts jobs with a question first when there isn't room for all of them.
 
+While a Codex job runs, a **THINK** line under NOW shows its latest reasoning summary (for example "⋯ Planning the CSV export"), and the band shows it when no tool is running. In the timeline, each group of tool calls shows the latest thought; press `e` to expand and read every thought in full, in order between the tool calls. These are the short summaries Codex writes about its reasoning, not its full reasoning. agy doesn't send them yet.
+
 Under each job's timeline:
 
 - **Stop** (`c`) ends a running job, or drops a queued one.
@@ -79,6 +82,13 @@ The **Settings** tab (`/handoff settings` or `4`) changes how work is routed. Ev
 | **Models** | Turn individual models off. Routing skips them and moves to the next model on that worker's ladder (cheapest first). A model you pin yourself with `--model` is still used. |
 | **Usage cut-offs** | *Prefer the other worker below* (default 20%): when a worker has less usage left than this and the other has more, the other one gets the task. *Never use a worker below* (default off): a worker under this is not used at all, and Claude tells you why. |
 | **Auto-benchmark** | The same switch as on the Bench tab. |
+
+**New models.** When Codex or agy starts offering a model family that isn't on its ladder (for example a new Sol release), you get a toast once, the Settings tab shows a dot, and the model appears under that worker with a **NEW** tag and two buttons:
+
+- **Ask Claude**: Claude compares it with the current ladder on price and coding benchmarks and suggests where it fits. Nothing changes until you agree. Claude then saves your own ladder with `agent-handoff config ladder <worker> <id> <id> …`, which overrides the built-in one (Settings shows "your ladder" and a button to go back to the built-in one).
+- **Dismiss**: hide it (`agent-handoff config ignore <family> off` brings it back).
+
+The plugin learns what each worker offers from `codex debug models` and `agy models`, which it caches and refreshes daily. Run `agent-handoff models` to refresh now and list anything new.
 
 Usage left means the tighter of the 5-hour and weekly windows, as shown in the meters at the top of the pane. The same settings are available from a terminal:
 

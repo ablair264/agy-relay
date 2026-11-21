@@ -20,6 +20,46 @@ export const MODELS = {
   codex: ['gpt-6-luna:low', 'gpt-6-luna:medium', 'gpt-6.2-sol:low', 'gpt-6.2-sol:medium', 'gpt-6.2-sol:high', 'gpt-6.2-astra:medium'],
 }
 export const OVERFLOW = new Set(['gemini-4-argon-medium', 'gemini-4-argon-high'])
+export const LADDERS = { agy: MODELS.agy.filter((m) => !OVERFLOW.has(m)), codex: MODELS.codex }
+// Families left off on purpose (retired, or not used for delegated work): never flagged as new.
+export const RETIRED = { agy: ['gemini-3.8-flash'], codex: ['gpt-6.1-sol', 'gpt-6-astra'] }
+const OWNS = { agy: (m) => /^gemini-/.test(m), codex: (m) => /^(gpt-|o\d|codex-)/.test(m) }
+
+// A model id's family and effort: gpt-6.2-sol:high -> gpt-6.2-sol, high;
+// gemini-4-neon-medium -> gemini-4-neon, medium.
+const EFFORT = /-(minimal|low|medium|high|xhigh|max)$/
+export const familyOf = (id = '') => (id.includes(':') ? id.split(':')[0] : id.replace(EFFORT, ''))
+export const effortOf = (id = '') => (id.includes(':') ? id.split(':')[1] : (id.match(EFFORT) || [])[1] || '')
+// gpt-6.3-sol -> Sol 6.3; gemini-4-carbon -> Carbon (Gemini 4)
+export function familyName(f = '') {
+  const g = f.match(/^gpt-([\d.]+)-([a-z]+)$/)
+  if (g) return `${g[2][0].toUpperCase()}${g[2].slice(1)} ${g[1]}`
+  const m = f.match(/^gemini-([\d.]+)-([a-z]+)$/)
+  if (m) return `${m[2][0].toUpperCase()}${m[2].slice(1)} (Gemini ${m[1]})`
+  return f
+}
+
+// The models a worker's ladder uses (the user's own ladder if they set one), then overflow.
+export const modelsFor = (s, wk) => [...(s.ladders?.[wk] || LADDERS[wk]), ...(wk === 'agy' ? [...OVERFLOW] : [])]
+
+// Model families a worker offers (from its own model list) that none of its ladders
+// know about, minus ones the user dismissed: [{ worker, family, efforts }].
+export function newModels(offered, s) {
+  const out = []
+  for (const wk of ['agy', 'codex']) {
+    const known = new Set([...modelsFor(s, wk), ...MODELS[wk]].map(familyOf).concat(RETIRED[wk]))
+    const fams = new Map()
+    for (const id of offered?.[wk] || []) {
+      if (!OWNS[wk](id)) continue
+      const f = familyOf(id)
+      if (known.has(f) || s.ignored?.has(f)) continue
+      const e = effortOf(id)
+      fams.set(f, [...(fams.get(f) || []), ...(e ? [e] : [])])
+    }
+    for (const [family, efforts] of fams) out.push({ worker: wk, family, efforts: [...new Set(efforts)] })
+  }
+  return out
+}
 export const WORKERS = { agy: 'Antigravity · Gemini', codex: 'Codex CLI · GPT' }
 export const backendOfModel = (m = '') => (/^gemini-/.test(m) ? 'agy' : 'codex')
 
@@ -32,6 +72,8 @@ export function settingsOf(c) {
     workers: { agy: c.workers?.agy !== false, codex: c.workers?.codex !== false },
     disabled: new Set(Array.isArray(c.disabled_models) ? c.disabled_models : []),
     limits: { low: c.limits?.low ?? 0.2, stop: c.limits?.stop ?? 0 },
+    ladders: Object.fromEntries(['agy', 'codex'].filter((w) => Array.isArray(c.ladders?.[w]) && c.ladders[w].length).map((w) => [w, c.ladders[w]])),
+    ignored: new Set(Array.isArray(c.ignored_models) ? c.ignored_models : []),
   }
 }
 
@@ -100,17 +142,29 @@ export const toolKind = (t = '') =>
     : /run_command|command_status|send_command/.test(t) ? 'shell'
       : /search_web|read_url|browser/.test(t) ? 'web' : 'read'
 
-// Fold events into timeline items: Claude's handoffs and checks, agy's work
-// bursts (consecutive tool calls) and replies.
+// A reasoning summary split into its headline and the rest:
+// "**Planning the export**\n\nI'll start by…" -> { head: 'Planning the export', body: "I'll start by…" }
+export function thoughtParts(text) {
+  const t = String(text || '').trim()
+  const bold = t.match(/^\*\*(.+?)\*\*\s*/)
+  const head = (bold ? bold[1] : t.split('\n')[0]).replace(/[*_`#]/g, '').trim()
+  const body = (bold ? t.slice(bold[0].length) : t.split('\n').slice(1).join('\n')).replace(/\*\*/g, '').trim()
+  return { head, body }
+}
+
+// Fold events into timeline items: Claude's handoffs and checks, the worker's work
+// bursts (consecutive tool calls, with any reasoning summaries between them) and replies.
 export function timeline(events) {
   const items = []
   const t0 = events.length ? Date.parse(events[0].ts) : 0
   let burst = null
   for (const ev of events) {
     const at = (Date.parse(ev.ts) - t0) / 1000
-    if (ev.type === 'tool') {
+    if (ev.type === 'tool' || ev.type === 'thought') {
       if (ev.state === 'start') continue
-      if (!burst) { burst = { kind: 'burst', at, turn: ev.turn, tools: [], errors: 0 }; items.push(burst) }
+      if (!burst) { burst = { kind: 'burst', at, turn: ev.turn, tools: [], thoughts: [], steps: [], errors: 0 }; items.push(burst) }
+      burst.steps.push(ev)
+      if (ev.type === 'thought') { burst.thoughts.push(ev); continue }
       burst.tools.push(ev)
       if (ev.state === 'error') burst.errors++
       continue

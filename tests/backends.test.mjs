@@ -35,6 +35,11 @@ test('codex: question, answer by resume, file change, gate and ledger', () => {
   assert.equal(r1.status, 10, r1.stdout + r1.stderr); // question
   assert.match(r1.stdout, /backend: codex/);
   assert.match(r1.stdout, /QUESTION: Which language/);
+  assert.match(r1.stdout, /codex thinking: Checking the test file/);
+  const job1 = fs.readdirSync(path.join(HOME, 'jobs')).sort().pop();
+  const thought = fs.readFileSync(path.join(HOME, 'jobs', job1, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse).find((e) => e.type === 'thought');
+  assert.equal(thought?.text, '**Checking the test file**\n\nI will read greet.test.mjs before writing anything.');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(HOME, 'jobs', job1, 'status.json'), 'utf8')).thought.head, 'Checking the test file');
   const args1 = JSON.parse(fs.readFileSync(path.join(HOME, 'fake-codex-args.json'), 'utf8'));
   assert.deepEqual(args1.slice(0, 3), ['exec', '-C', dir]);
   assert.ok(args1.includes('--json') && args1.includes('--output-schema'));
@@ -185,4 +190,23 @@ test('demo writes sample jobs, refuses real data, and acts on pane requests', as
   assert.equal(q.st.state, 'starting');
   scene.step(Date.now() + 60e3);
   assert.equal(q.st.state, 'done');
+});
+
+test('routing uses your own ladder, and `models` lists families no ladder knows', () => {
+  const H = path.join(tmp, 'ladder-home');
+  const e = { AGENT_HANDOFF_HOME: H };
+  cli(['config', 'ladder', 'codex', 'gpt-6-luna:medium', 'gpt-6.2-astra:high'], e);
+  const r = cli(['route', '--backend', 'codex', '--kind', 'implement', 'x'], e); // implement starts on rung 3: clamps to the last
+  assert.match(r.stdout, /model: gpt-6\.2-astra:high/, r.stdout + r.stderr);
+  assert.match(r.stdout, /your own codex ladder: gpt-6-luna:medium → gpt-6\.2-astra:high/);
+  cli(['config', 'ladder', 'codex', 'default'], e);
+  // The fake codex offers gpt-6.2-astra:low, which is a known family: nothing new.
+  assert.doesNotMatch(cli(['models'], e).stdout, /^new /m);
+  cli(['config', 'ladder', 'codex', 'gpt-6-luna:low'], e); // now gpt-6.2-sol and gpt-6.2-astra are only in the built-in list: still known
+  assert.doesNotMatch(cli(['models'], e).stdout, /^new /m);
+  // A newly released family is listed, and dismissing it hides it.
+  const m = cli(['models'], { ...e, FAKE_CODEX_NEW: '1' }).stdout;
+  assert.match(m, /^new codex  gpt-6\.3-sol \(Sol 6\.3\): low, high\. Not on the ladder/m);
+  cli(['config', 'ignore', 'gpt-6.3-sol'], e);
+  assert.doesNotMatch(cli(['models'], { ...e, FAKE_CODEX_NEW: '1' }).stdout, /^new /m);
 });

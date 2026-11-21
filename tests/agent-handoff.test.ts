@@ -400,6 +400,7 @@ function settingsCli(on: any, files: Record<string, string>, runs: string[][]) {
       if (a[0] === 'model') c.disabled_models = a[2] === 'off' ? [...(c.disabled_models || []), a[1]] : (c.disabled_models || []).filter((m: string) => m !== a[1])
       if (a[0] === 'limit') c.limits = { low: 0.2, stop: 0, ...(c.limits || {}), [a[1]]: Number(a[2]) / 100 }
       if (a[0] === 'backend') c.backend = a[1]
+      if (a[0] === 'ignore') c.ignored_models = [...(c.ignored_models || []), a[1]]
       files[`${HOME}/config.json`] = JSON.stringify(c)
     }
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
@@ -513,5 +514,68 @@ test('demo jobs never message Claude when stopped from the pane', async ($, on) 
   const ui = await $.ui.mount(PANE('terminal'))
   await ui.press({ key: 'cancel' })
   expect(submitted).toEqual([])
+  await ui.unmount()
+})
+
+test("codex's reasoning shows in the band, on the THINK line and in the timeline", async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 30e3 })
+  const thinking = { ...workingStatus, active: null, thought: { head: 'Planning the CSV export', at: at(26) } }
+  const files = fixture(on, thinking, {}, { backend: 'codex', model: 'gpt-6.2-sol:low', stall_s: 480 })
+  files[`${HOME}/jobs/${ID}/events.jsonl`] = [
+    events[0], events[1],
+    { ts: at(8), turn: 1, type: 'thought', text: '**Reading the reports page**\n\nThe table rows come from useReportRows.' },
+    { ts: at(12), turn: 1, type: 'tool', state: 'done', tool: 'shell', arg: 'sed -n 1,80p src/pages/Reports.tsx', dur: 0.3 },
+    { ts: at(26), turn: 1, type: 'thought', text: '**Planning the CSV export**\n\nQuote cells with commas, quotes or newlines.' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n'
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  const band = await $.ui.mount({
+    plugin: 'agent-handoff', component: 'AbovePrompt', surface: 'terminal', viewport: { columns: 160, rows: 50 },
+    props: { hasSurvey: false, isWorking: true, maxRows: 4, bodyColumns: 120, scroll: { offset: 0, bodyRows: 4 }, view: {} },
+  } as any)
+  expect(await band.find({ type: 'Text', text: 'Sol 6.2 low · thinking: Planning the CSV export' })).toBeDefined()
+  await band.unmount()
+
+  await $.command.run({ command: 'handoff', args: '' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '⋯ Planning the CSV export' })).toBeDefined() // THINK line and latest in the burst
+  expect(await ui.find({ type: 'Text', text: /^worked · 1 tool · 2 thoughts$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '⋯ Reading the reports page' })).toBeUndefined() // collapsed: latest only
+  await ui.press({ key: 'expand' })
+  expect(await ui.find({ type: 'Text', text: '⋯ Reading the reports page' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Quote cells with commas, quotes or newlines.' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a model a worker offers but no ladder knows is flagged once, with Ask Claude and Dismiss', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  files[`${HOME}/codex-models.json`] = JSON.stringify({ at: T0, models: ['gpt-6.3-sol:low', 'gpt-6.3-sol:high', 'gpt-6.2-sol:low', 'gpt-6.1-sol:low'].map((id) => ({ id })) })
+  files[`${HOME}/models.json`] = JSON.stringify({ at: T0, models: ['gemini-4-neon-low', 'claude-sonnet-5-5', 'gemini-3.8-flash-low'].map((id) => ({ id })) })
+  const toasts: string[] = []
+  const submitted: string[] = []
+  const runs: string[][] = []
+  settingsCli(on, files, runs)
+  on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.log', () => ({ value: undefined }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  // Only the new codex family: Claude models in agy, retired families and known ones are not flagged.
+  expect(toasts).toEqual(["codex now offers Sol 6.3, which isn't on its ladder. See /handoff settings."])
+  await $.command.run({ command: 'handoff', args: 'settings' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ key: 'tab-settings' })).toMatchObject({ props: { label: 'SETTINGS •' } })
+  expect(await ui.find({ type: 'Text', text: ' NEW ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'low · high' })).toBeDefined()
+  await ui.press({ key: 'ask-gpt-6.3-sol' })
+  expect(submitted[0]).toMatch(/^agent-handoff: codex now offers gpt-6\.3-sol \(efforts: low, high\), which isn't on its model ladder\..*Don't change anything until I agree; then apply it with `agent-handoff config ladder codex/)
+  await ui.press({ key: 'dismiss-gpt-6.3-sol' })
+  expect(runs.at(-1)!.slice(-4)).toEqual(['config', 'ignore', 'gpt-6.3-sol', 'on'])
+  expect(toasts.length).toBe(1)
   await ui.unmount()
 })

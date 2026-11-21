@@ -4,7 +4,7 @@
 //  - toasts and transcript log lines when the worker picks up, asks, finishes or stalls
 //  - auto-benchmarking: asks Claude to review and rate each finished handoff
 // It only reads ~/.agent-handoff (written by the agent-handoff CLI); buttons call the CLI.
-import { JOB_RE, LIVE, benchRows, clip, parseJsonl, safeJson, settingsOf, shortModel, stateOf, workerOf } from './data.js'
+import { JOB_RE, LIVE, benchRows, clip, familyName, newModels, parseJsonl, safeJson, settingsOf, shortModel, stateOf, workerOf } from './data.js'
 import { bands, pane } from './view.js'
 
 const PANE = 'agent-handoff'
@@ -31,6 +31,8 @@ let quota = null
 let benchOn = true // config.json autobench; off = no reviews are expected
 let cfg = {} // config.json as the CLI wrote it (the Settings tab edits it through the CLI)
 let picking = false // the Change model list is open under the live job
+let offered = {} // { agy: [ids], codex: [ids] }: what each worker lists, from the CLI's model caches
+let offeredAt = 0
 let verdicts = new Set()
 let notice = ''
 let noticeUntil = 0
@@ -82,6 +84,14 @@ async function refresh($, now) {
   cfg = (await readJson($, `${home}/config.json`)) || {}
   const on = autobenchOf(cfg)
   benchOn = on
+  // What each worker offers comes from the CLI's caches of `agy models` and
+  // `codex debug models` (refreshed daily by routing, or by `agent-handoff models`).
+  if (now - offeredAt > 60e3) {
+    offeredAt = now
+    const ids = async (f) => ((await readJson($, `${home}/${f}`))?.models || []).map((x) => x.id).filter(Boolean)
+    offered = { agy: await ids('models.json'), codex: await ids('codex-models.json') }
+    await announceNewModels($)
+  }
   for (const j of recent) await announce($, j, on)
   if (!paneOpen) return
 
@@ -235,6 +245,23 @@ async function sendAnswer($, id, text) {
   await redrawNow($)
 }
 
+// A toast, once per model family on this machine, when a worker starts offering a
+// model no ladder knows. The Settings tab lists it with Ask Claude and Dismiss.
+async function announceNewModels($) {
+  const news = newModels(offered, settingsOf(cfg))
+  if (!news.length) return
+  const told = (await $.store.get('toldModels')) || []
+  const fresh = news.filter((n) => !told.includes(n.family))
+  if (!fresh.length) return
+  await $.store.set('toldModels', [...told, ...fresh.map((n) => n.family)].slice(-50))
+  for (const n of fresh) $.ui.toast(`${n.worker} now offers ${familyName(n.family)}, which isn't on its ladder. See /handoff settings.`)
+}
+
+// Ask Claude where a new model fits; nothing changes until the user agrees.
+function askAboutModel($, n) {
+  tellClaude($, { text: `agent-handoff: ${n.worker} now offers ${n.family}${n.efforts.length ? ` (efforts: ${n.efforts.join(', ')})` : ''}, which isn't on its model ladder. Look up how it compares with the current ${n.worker} ladder (\`agent-handoff config\` shows it) on price and agentic coding benchmarks, and suggest where it fits. The ladder runs cheapest first, one model per rung${n.worker === 'codex' ? ', with ids written model:effort' : ''}. Don't change anything until I agree; then apply it with \`agent-handoff config ladder ${n.worker} <id> <id> …\`. To hide it instead: \`agent-handoff config ignore ${n.family}\`.` })
+}
+
 // Claude needs to hear about what the user does in the pane, or it would answer,
 // restart or wait on a job that has moved on. Demo jobs stay quiet (screenshots).
 function tellClaude($, msg) {
@@ -309,7 +336,7 @@ export function register(on) {
         const now = await $.clock.now()
         await refresh($, now)
         await nudgeReview($, now)
-        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn, cfg])
+        const sig = JSON.stringify([recent.map((j) => [j.id, j.state, j.status.last_event_at]), job?.id, job?.events?.length, tab, notice, bench?.length, jobs.length, quota?.gemini5h, quota?.codexWeek, benchOn, cfg, offered])
         const live = recent.some((j) => LIVE.has(j.status.state))
         if (sig !== drawn || live || (notice && now > noticeUntil)) {
           drawn = sig
@@ -387,7 +414,7 @@ export function register(on) {
     const pos = job ? ids.indexOf(job.id) : -1
     return pane(E, {
       tab, job, jobs, bench, quota, now, notice, expanded, cols: e.props?.bodyColumns,
-      settings: settingsOf(cfg), picking: picking && !!job,
+      settings: settingsOf(cfg), picking: picking && !!job, newModels: newModels(offered, settingsOf(cfg)),
       active: activeJobs(now),
       following: !selId,
       jobState: job ? effState(job.status, job.meta, now) : null,
@@ -406,6 +433,9 @@ export function register(on) {
         togglePicker: () => { picking = !picking; $.ui.invalidate('ui.render') },
         rerunOn: (model) => rerunOn($, job.id, model),
         toggleAutobench: () => setAutobench($, benchOn ? 'off' : 'on'),
+        askModel: (n) => { askAboutModel($, n); say($, `Asked Claude where ${familyName(n.family)} fits.`) },
+        dismissModel: (n) => setting($, ['ignore', n.family, 'on'], `${familyName(n.family)} hidden. Undo: agent-handoff config ignore ${n.family} off`),
+        resetLadder: (wk) => setting($, ['ladder', wk, 'default'], `${wk} is back on the built-in ladder.`),
         toggleWorker: (w) => {
           const isOn = settingsOf(cfg).workers[w]
           return setting($, ['worker', w, isOn ? 'off' : 'on'], `${w} ${isOn ? 'turned off: routing won’t use it' : 'turned on'}.`)

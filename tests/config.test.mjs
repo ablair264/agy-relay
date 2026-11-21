@@ -69,3 +69,17 @@ test("the pane's model lists match the backends", async () => {
   const data = await import('../hooks/data.js');
   assert.deepEqual(data.MODELS, MODELS);
 });
+
+test('your own ladder and dismissed models are stored and validated', () => {
+  const HOME = path.join(tmp, 'd');
+  const env = { AGENT_HANDOFF_HOME: HOME, HOME: tmp };
+  const out = run(['config', 'ladder', 'codex', 'gpt-6-luna:low,gpt-6.3-sol:low', 'gpt-6.3-sol:high'], env).stdout;
+  assert.match(out, /codex models \(your own ladder/);
+  assert.match(out, /✓ gpt-6\.3-sol:high/);
+  assert.notEqual(run(['config', 'ladder', 'codex', 'gpt-6.3-sol'], env).status, 0, 'codex ids need an effort');
+  assert.notEqual(run(['config', 'ladder', 'agy', 'gpt-6-luna:low'], env).status, 0, 'not an agy model');
+  run(['config', 'ignore', 'gpt-7-nova'], env);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')).ignored_models, ['gpt-7-nova']);
+  run(['config', 'ladder', 'codex', 'default'], env);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')).ladders.codex, undefined);
+});

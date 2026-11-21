@@ -16,6 +16,8 @@ if (argv[0] === 'debug' && argv[1] === 'models') {
     { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
     { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium', 'high']) },
     { slug: 'gpt-6-luna', display_name: 'GPT-6-Luna', visibility: 'list', supported_reasoning_levels: lv(['low', 'medium']) },
+    // FAKE_CODEX_NEW: a model released after the plugin's ladder was written.
+    ...(process.env.FAKE_CODEX_NEW ? [{ slug: 'gpt-6.3-sol', display_name: 'GPT-6.3-Sol', visibility: 'list', supported_reasoning_levels: lv(['low', 'high']) }] : []),
   ] }));
   process.exit(0);
 }
@@ -53,6 +55,7 @@ else if (mode === 'limit') {
   out({ type: 'turn.failed', error: { message: msg } });
   process.exit(1);
 } else {
+  out({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: '**Checking the test file**\n\nI will read greet.test.mjs before writing anything.' } });
   out({ type: 'item.started', item: { id: 'item_1', type: 'command_execution', command: "/bin/zsh -lc 'ls'", status: 'in_progress' } });
   out({ type: 'item.completed', item: { id: 'item_1', type: 'command_execution', command: "/bin/zsh -lc 'ls'", aggregated_output: 'greet.test.mjs\n', exit_code: 0, status: 'completed' } });
   let msg;

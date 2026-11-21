@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import { appendLedger, jobFile, jobDir, listJobs, readJSON, readLedger, resolveJob, writeJSON, newJobId, LEDGER } from '../lib/store.mjs';
 import { holder, pidAlive, queued, releaseLock, tryLock, waitTurn } from '../lib/queue.mjs';
 import { BACKENDS, ORDER } from '../lib/backends/index.mjs';
-import { config, modelOn, setConfig, workerOn, CONFIG } from '../lib/config.mjs';
-import { MODELS } from '../lib/backends/index.mjs';
+import { config, modelOn, modelsOf, setConfig, workerOn, CONFIG } from '../lib/config.mjs';
+import { familyName, newModels, settingsOf } from '../hooks/data.js';
 import { KINDS, LADDER, pct, route, stats } from '../lib/route.mjs';
 import { EXIT, brief, runTurn } from '../lib/run.mjs';
 import { reviewPacket } from '../lib/review.mjs';
@@ -294,11 +294,18 @@ function cmdQuota() {
 }
 
 function cmdModels() {
+  const c = config();
+  const offered = {};
   for (const b of ORDER) {
     const be = BACKENDS[b];
     if (!be.installed()) { console.log(`${b}: not installed`); continue; }
-    const have = new Set(be.listModels({ refresh: true }).map((m) => m.id));
-    for (const m of be.LADDER) console.log(`${have.has(m) ? '✓' : '✗'} ${b.padEnd(6)} ${m}`);
+    offered[b] = be.listModels({ refresh: true }).map((m) => m.id);
+    const have = new Set(offered[b]);
+    for (const m of modelsOf(c, b)) console.log(`${have.has(m) ? '✓' : '✗'} ${b.padEnd(6)} ${m}${have.size && !have.has(m) ? '   not offered: routing skips it' : ''}`);
+  }
+  // Families a worker offers that no ladder knows: the pane's Settings tab flags them too.
+  for (const n of newModels(offered, settingsOf(c))) {
+    console.log(`new ${n.worker.padEnd(6)} ${n.family} (${familyName(n.family)})${n.efforts.length ? `: ${n.efforts.join(', ')}` : ''}. Not on the ladder; add it with agent-handoff config ladder ${n.worker} …, or hide it: agent-handoff config ignore ${n.family}`);
   }
   return 0;
 }
@@ -314,8 +321,9 @@ function cmdConfig(o) {
     `limits    prefer the other worker below ${pct(c.limits.low)} left · ${c.limits.stop ? `never use a worker below ${pct(c.limits.stop)} left` : 'no hard stop'}`,
   ];
   for (const w of ORDER) {
-    lines.push(`${w} models${workerOn(c, w) ? '' : ' (worker off)'}`);
-    for (const m of MODELS[w]) lines.push(`  ${modelOn(c, m) ? '✓' : '✗'} ${m}${BACKENDS[w].LADDER.includes(m) ? '' : '  (overflow)'}`);
+    if (!modelsOf(c, w).length) continue;
+    lines.push(`${w} models${workerOn(c, w) ? '' : ' (worker off)'}${c.ladders?.[w]?.length ? ' (your own ladder; reset: agent-handoff config ladder ' + w + ' default)' : ''}`);
+    for (const m of modelsOf(c, w)) lines.push(`  ${modelOn(c, m) ? '✓' : '✗'} ${m}${BACKENDS[w].LADDER.includes(m) ? '' : '  (overflow)'}`);
   }
   lines.push(`(${CONFIG}; env AGENT_HANDOFF_BACKEND / AGENT_HANDOFF_AUTOBENCH override)`);
   console.log(lines.join('\n'));
