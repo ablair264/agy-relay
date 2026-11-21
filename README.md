@@ -27,15 +27,26 @@ Claude stays in charge. It writes the brief, picks the worker and model, answers
 
 ## Install
 
-Run this inside Claude Code:
+In a terminal, on each machine you want it on:
 
-```text
-/plugin install agent-handoff --marketplace ablair264/claude-code-agent-handoff
+```sh
+claude plugin marketplace add ablair264/agy-relay
+claude plugin install agent-handoff@agent-handoff
 ```
 
-That's all. On the first handoff, Claude runs a one-time setup that puts the `agent-handoff` command on your PATH and connects the pane. If setup finds a problem, such as Codex not being signed in, Claude tells you the command to run.
+Then restart Claude Code. (Inside Claude Code, `/plugin marketplace add ablair264/agy-relay` followed by `/plugin install agent-handoff@agent-handoff` does the same.)
 
-To try a local checkout instead, start Claude Code with `claude --plugin-dir /path/to/agent-handoff`.
+On the first handoff, Claude runs a one-time setup that puts the `agent-handoff` command on your PATH and connects the pane. If setup finds a problem, such as Codex not being signed in, Claude tells you the command to run. You can also run it yourself afterwards with `agent-handoff doctor`.
+
+To get updates later:
+
+```sh
+claude plugin marketplace update agent-handoff
+```
+
+then restart Claude Code. To try a local checkout instead, start Claude Code with `claude --plugin-dir /path/to/agent-handoff`.
+
+Each machine keeps its own jobs, settings and benchmark ledger in `~/.agent-handoff`. To carry your benchmark history and settings to a new machine, copy `ledger.jsonl` and `config.json` from `~/.agent-handoff` on the old one into the same folder on the new one.
 
 ## Your first handoff
 
