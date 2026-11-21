@@ -274,7 +274,7 @@ test('the bench tab switches auto-benchmarking off and on', async ($, on) => {
   await $.command.run({ command: 'handoff', args: 'bench' })
   await clock.advance(1000)
   const ui = await $.ui.mount(PANE('terminal'))
-  expect(await ui.find({ type: 'Text', text: ' ON ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ' ON  ' })).toBeDefined() // padded to the width of OFF
   await ui.press({ key: 'autobench' })
   expect(runs[0].slice(-3)).toEqual(['config', 'autobench', 'off'])
   await clock.advance(1000)
@@ -692,5 +692,33 @@ test('a finished, rated job reads as one card, with the relay notes and routing 
   expect(await ui.find({ type: 'Text', text: /^! agy did not return the JSON status object/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'prior for implement: gemini-4-hydrogen-high' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'picked up · c8a4932f-76e8' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a narrow pane drops secondary columns instead of overflowing, and asks to be widened below the minimum', async ($, on) => {
+  const clock = mock.clock(on, { now: T0 + 40e3 })
+  const files = fixture(on, questionStatus)
+  files[`${HOME}/benchlm.json`] = JSON.stringify({ at: T0, dataAsOf: '2026-01-02', attribution: 'Data from BenchLM.ai', models: {
+    'gpt-6-2-sol': { name: 'GPT-6.2 Sol', price: { input: 2, output: 10 }, coding: { score: 51.2, rank: 4 }, agentic: { score: 52.6, rank: 4 } },
+  } })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.command.run({ command: 'handoff', args: 'settings' })
+  await clock.advance(1000)
+  const narrow = (cols: number) => { const p = PANE('terminal'); return { ...p, props: { ...p.props, bodyColumns: cols } } }
+
+  let ui = await $.ui.mount(narrow(44))
+  expect(await ui.find({ type: 'Text', text: 'CODING'.padStart(6) })).toBeDefined() // the score that decides stays
+  expect(await ui.find({ type: 'Text', text: '$/1M IN/OUT' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'AGENTIC'.padStart(7) })).toBeUndefined()
+  expect(await ui.find({ key: 'default-worker' })).toBeDefined()
+  // The two cut-offs read apart without colour: a light mark and a heavy one.
+  expect(await ui.find({ type: 'Text', text: '│', props: { color: 'yellow' } })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '┃', props: { color: 'red' } })).toBeDefined()
+  await ui.unmount()
+
+  ui = await $.ui.mount(narrow(30))
+  expect(await ui.find({ type: 'Text', text: 'Widen the pane to 34 columns to see handoffs.' })).toBeDefined()
+  expect(await ui.find({ key: 'tab-settings' })).toBeUndefined()
   await ui.unmount()
 })
